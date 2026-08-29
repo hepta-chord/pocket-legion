@@ -10,10 +10,12 @@ import {
   partyMaxHp,
   PARTY_BASE_HP,
   refillFront,
+  resetSortieProgress,
   startBattle,
   swapMembers,
   SWAP_COOLDOWN,
   useGuard,
+  usePotion,
   useSkill,
   whyCannotUse,
   type EnemyDef,
@@ -485,6 +487,127 @@ describe('身代わり', () => {
 
     expect(attacker.downed).toBe(true);
     expect(guardian.downed).toBe(false);
+  });
+});
+
+describe('物理コストの持ち越し (バグ修正)', () => {
+  it('戦闘中に勝って turnBump が残っても、次の startBattle で素のコストに戻る', () => {
+    const front = fighter('a');
+    const party = newParty([front]);
+    const state = startBattle(party, 100, 100, enemy({ maxHp: 999 }));
+    const rng = new Rng(1);
+    useSkill(state, 0, 0, rng); // 物理を 1 発。turnBump が 1 に上がる
+    expect(effectiveCost(front.skills[0])).toBe(1);
+    // endTurn (ターン明けの整理) を経由せず、プレイヤーの行動中に勝利させる
+    state.enemy.hp = 0;
+    useSkill(state, 0, 0, rng);
+    expect(state.outcome).toBe('victory');
+    expect(front.skills[0].turnBump).toBe(1); // 持ち越ったままになっている
+
+    const next = startBattle(party, 100, 100, enemy());
+    expect(effectiveCost(front.skills[0])).toBe(0);
+    expect(next.party.front[0]?.skills[0].turnBump).toBe(0);
+  });
+
+  it('控えのメンバーの turnBump も戦闘開始でリセットされる', () => {
+    const reserveMember = fighter('b');
+    reserveMember.skills[0].turnBump = 1;
+    const party = newParty([fighter('a')], [reserveMember]);
+    startBattle(party, 100, 100, enemy());
+    expect(reserveMember.skills[0].turnBump).toBe(0);
+  });
+});
+
+describe('コンボ', () => {
+  it('攻撃が命中するたび 1 増え、ターン明けで 0 に戻る', () => {
+    const state = battleOf([fighter('a', 'kingdom', [SLASH, { ...SLASH, id: 'slash2' }])], [], enemy({ maxHp: 99999 }));
+    expect(state.combo).toBe(0);
+    useSkill(state, 0, 0, new Rng(1));
+    expect(state.combo).toBe(1);
+    useSkill(state, 0, 1, new Rng(1));
+    expect(state.combo).toBe(2);
+    endTurn(state, new Rng(1));
+    expect(state.combo).toBe(0);
+  });
+
+  it('同一ターンの 2 発目は 1 発目よりダメージが伸びる (発動時点の combo を使う)', () => {
+    const state = battleOf([fighter('a', 'kingdom', [SLASH, { ...SLASH, id: 'slash2' }])], [], enemy({ maxHp: 99999 }));
+    useSkill(state, 0, 0, new Rng(5));
+    const first = 99999 - state.enemy.hp;
+    const hpBeforeSecond = state.enemy.hp;
+    // 同じ乱数を与えて被ダメージの下限乱数を揃え、combo による伸びだけを見る
+    useSkill(state, 0, 1, new Rng(5));
+    const second = hpBeforeSecond - state.enemy.hp;
+    expect(second).toBeGreaterThan(first);
+  });
+
+  it('回復・支援・バリアは combo を増やさず、途切れさせもしない', () => {
+    const state = battleOf([fighter('a', 'kingdom', [SLASH, CHEER])], [], enemy({ maxHp: 99999 }));
+    useSkill(state, 0, 0, new Rng(1));
+    expect(state.combo).toBe(1);
+    useSkill(state, 0, 1, new Rng(1)); // 鼓舞 (buff)
+    expect(state.combo).toBe(1);
+    useSkill(state, 0, 0, new Rng(1)); // もう 1 発。途切れずに 2 になる
+    expect(state.combo).toBe(2);
+  });
+
+  it('敵を倒しきったあとの攻撃 (不発) は combo を増やさない', () => {
+    const state = battleOf([fighter('a', 'kingdom', [SLASH])], [], enemy({ maxHp: 1 }));
+    useSkill(state, 0, 0, new Rng(1));
+    expect(state.outcome).toBe('victory');
+    expect(state.combo).toBe(1);
+  });
+});
+
+describe('回復薬', () => {
+  it('最大 HP の半分回復し、マナと combo を動かさない', () => {
+    const state = battleOf([fighter('a')]);
+    state.hp = 40;
+    state.mana = 3;
+    state.combo = 2;
+    const healed = usePotion(state);
+    expect(healed).toBe(50);
+    expect(state.hp).toBe(90);
+    expect(state.mana).toBe(3);
+    expect(state.combo).toBe(2);
+  });
+
+  it('最大値で止まる', () => {
+    const state = battleOf([fighter('a')]);
+    state.hp = 90;
+    usePotion(state);
+    expect(state.hp).toBe(100);
+  });
+});
+
+describe('resetSortieProgress', () => {
+  it('前衛・控え全員の sortieBump と spent を戻す', () => {
+    const f = fighter('a', 'kingdom', [FIRE]);
+    const r = fighter('b', 'order', [NUKE]);
+    const party = newParty([f], [r]);
+    f.skills[0].sortieBump = 3;
+    r.skills[0].spent = true;
+    resetSortieProgress(party);
+    expect(f.skills[0].sortieBump).toBe(0);
+    expect(r.skills[0].spent).toBe(false);
+  });
+});
+
+describe('Party から外れた Fighter の回収 (state.left)', () => {
+  it('ダウンで前衛から外れた本人が left に積まれる', () => {
+    const state = battleOf([fighter('a', 'kingdom', [SACRIFICE])], [fighter('b', 'kingdom')]);
+    const a = state.party.front[0]!;
+    useSkill(state, 0, 0, new Rng(1));
+    expect(state.left).toHaveLength(1);
+    expect(state.left[0]).toBe(a);
+  });
+
+  it('手動交代で下がった本人が left に積まれる', () => {
+    const state = battleOf([fighter('a')], [fighter('c', 'order')]);
+    const a = state.party.front[0]!;
+    swapMembers(state, [{ slot: 0, reserveId: 'c' }]);
+    expect(state.left).toHaveLength(1);
+    expect(state.left[0]).toBe(a);
   });
 });
 
