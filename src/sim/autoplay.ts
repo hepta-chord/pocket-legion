@@ -23,7 +23,7 @@ import {
   type SwapMove,
 } from '../battle';
 import { buildFighter, CHARACTERS } from '../data/characters';
-import { makePack } from '../data/enemies';
+import { makeBoss, makePack } from '../data/enemies';
 import { Rng } from '../rng';
 
 // ---------------------------------------------------------------------------
@@ -127,12 +127,18 @@ export interface SortieResult {
   swaps: number;
   downs: number;
   annihilated: boolean;
+  /** 区画のボスに勝ったか。雑魚で倒れたときは挑めていない */
+  bossWon: boolean;
+  /** ボス戦のターン数。挑めていなければ 0 */
+  bossTurns: number;
 }
 
 const TURN_CAP = 25;
+/** ボスは消耗戦になるので上限を別に持つ。設計目標は 50〜100 ターン */
+const BOSS_TURN_CAP = 200;
 
-export function playSortie(startDepth: number, rng: Rng): SortieResult {
-  // 12 人のプールから 10 人を無作為に連れて行く
+export function playSortie(sectorId: number, startDepth: number, rng: Rng): SortieResult {
+  // プールから 10 人を無作為に連れて行く
   const picked = [...CHARACTERS]
     .map((e) => ({ e, key: rng.next() }))
     .sort((a, b) => a.key - b.key)
@@ -142,7 +148,16 @@ export function playSortie(startDepth: number, rng: Rng): SortieResult {
   const maxHp = partyMaxHp(party);
   let hp = maxHp;
 
-  const result: SortieResult = { survived: true, battlesWon: 0, turns: 0, swaps: 0, downs: 0, annihilated: false };
+  const result: SortieResult = {
+    survived: true,
+    battlesWon: 0,
+    turns: 0,
+    swaps: 0,
+    downs: 0,
+    annihilated: false,
+    bossWon: false,
+    bossTurns: 0,
+  };
 
   // 深度 +2 ごとに 1 戦。区画 1 なら深度 2〜10 の 5 連戦にあたる
   for (let step = 0; step < 5; step++) {
@@ -167,6 +182,23 @@ export function playSortie(startDepth: number, rng: Rng): SortieResult {
     hp = Math.min(maxHp, hp + Math.round(maxHp * 0.2));
     refillFront(party);
   }
+
+  // 区画の最深部のボス。雑魚と違って長期戦になるので、上限もターン数も別に持つ
+  const boss = startBattle(party, hp, maxHp, [makeBoss(sectorId, rng)]);
+  let bossTurns = 0;
+  while (boss.outcome === 'ongoing' && bossTurns < BOSS_TURN_CAP) {
+    playTurn(boss, rng);
+    bossTurns += 1;
+  }
+  result.bossTurns = bossTurns;
+  result.swaps += boss.stats.swaps;
+  result.downs += boss.stats.downs;
+  if (boss.outcome === 'victory') {
+    result.bossWon = true;
+  } else {
+    result.survived = false;
+    result.annihilated = boss.outcome === 'annihilated';
+  }
   return result;
 }
 
@@ -183,9 +215,13 @@ export interface SectorReport {
   avgDowns: number;
   zeroSwapRate: number;
   annihilatedRate: number;
+  /** ボスに挑めた出撃のうち、勝った割合 */
+  bossWinRate: number;
+  /** ボス戦のターン数。挑めた出撃だけで平均する */
+  avgBossTurns: number;
 }
 
-export function measure(label: string, startDepth: number, sorties: number, seed: number): SectorReport {
+export function measure(label: string, sectorId: number, startDepth: number, sorties: number, seed: number): SectorReport {
   const rng = new Rng(seed);
   let wins = 0;
   let battles = 0;
@@ -194,8 +230,17 @@ export function measure(label: string, startDepth: number, sorties: number, seed
   let downs = 0;
   let zeroSwap = 0;
   let annihilated = 0;
+  let bossTries = 0;
+  let bossWins = 0;
+  let bossTurns = 0;
   for (let i = 0; i < sorties; i++) {
-    const r = playSortie(startDepth, rng);
+    const r = playSortie(sectorId, startDepth, rng);
+    // 雑魚で倒れた出撃はボスに挑めていないので、ボスの平均から外す
+    if (r.bossTurns > 0) {
+      bossTries += 1;
+      bossTurns += r.bossTurns;
+      if (r.bossWon) bossWins += 1;
+    }
     if (r.survived) wins += 1;
     battles += r.battlesWon + (r.survived ? 0 : 1);
     turns += r.turns;
@@ -214,5 +259,7 @@ export function measure(label: string, startDepth: number, sorties: number, seed
     avgDowns: downs / sorties,
     zeroSwapRate: zeroSwap / sorties,
     annihilatedRate: annihilated / sorties,
+    bossWinRate: bossTries === 0 ? 0 : bossWins / bossTries,
+    avgBossTurns: bossTries === 0 ? 0 : bossTurns / bossTries,
   };
 }

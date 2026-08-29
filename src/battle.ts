@@ -16,7 +16,7 @@ export const MANA_CAP = 10;
 export const GUARD_COST = 1;
 export const GUARD_MAX = 4;
 /** ガードの枚数ごとの軽減率。0 枚は素通し */
-export const GUARD_RATES = [0, 0.4, 0.6, 0.75, 0.85] as const;
+export const GUARD_RATES = [0, 0.25, 0.5, 0.75, 0.9] as const;
 export const SWAP_COOLDOWN = 3;
 /** パーティ最大 HP の、編成に依らない土台 */
 export const PARTY_BASE_HP = 60;
