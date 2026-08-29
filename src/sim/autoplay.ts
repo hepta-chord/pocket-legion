@@ -23,7 +23,7 @@ import {
   type SwapMove,
 } from '../battle';
 import { buildFighter, CHARACTERS } from '../data/characters';
-import { makeBoss, makePack } from '../data/enemies';
+import { makeBoss, makeFoe } from '../data/enemies';
 import { Rng } from '../rng';
 
 // ---------------------------------------------------------------------------
@@ -50,7 +50,7 @@ function usableAttacks(state: BattleState): AttackChoice[] {
   return out.sort((a, b) => a.cost - b.cost || b.power - a.power);
 }
 
-function findSupport(state: BattleState, kind: 'heal' | 'buff'): { slot: number; skill: number } | null {
+function findSupport(state: BattleState, kind: 'heal' | 'buff' | 'barrier'): { slot: number; skill: number } | null {
   for (let slot = 0; slot < state.party.front.length; slot++) {
     const f = state.party.front[slot];
     if (!f) continue;
@@ -74,14 +74,20 @@ function driedUp(state: BattleState, slot: number): boolean {
 }
 
 function playTurn(state: BattleState, rng: Rng): void {
-  // 予告が出ている敵のうち、最も重い guardBreak まで積めればダウンを止められる。
-  // 届かないなら軽減ぶんだけ取って、残りのマナは攻めに回す
-  const incoming = state.enemies.filter((e) => e.hp > 0 && e.countdown === 1);
-  if (incoming.length > 0) {
-    const need = Math.min(GUARD_MAX, Math.max(...incoming.map((e) => e.def.guardBreak)));
-    const want = state.mana >= need ? need : state.hp < state.maxHp * 0.5 ? 2 : 1;
-    while (state.guard < want && useGuard(state)) {
-      /* 積めるだけ積む */
+  // 予告が出ているなら guardBreak まで積めればダウンを止められる。
+  // 届かないなら軽減ぶんだけ取って、残りのマナは攻めに回す。
+  // バリアがあるならそれで足りるので、ガードは積まない。無いなら予告を見てから張る
+  const incoming = state.enemy.hp > 0 && state.enemy.countdown === 1;
+  if (incoming && !state.barrier) {
+    const barrierSkill = findSupport(state, 'barrier');
+    if (barrierSkill) {
+      useSkill(state, barrierSkill.slot, barrierSkill.skill, rng);
+    } else {
+      const need = Math.min(GUARD_MAX, state.enemy.def.guardBreak);
+      const want = state.mana >= need ? need : state.hp < state.maxHp * 0.5 ? 2 : 1;
+      while (state.guard < want && useGuard(state)) {
+        /* 積めるだけ積む */
+      }
     }
   }
 
@@ -162,7 +168,7 @@ export function playSortie(sectorId: number, startDepth: number, rng: Rng): Sort
   // 深度 +2 ごとに 1 戦。区画 1 なら深度 2〜10 の 5 連戦にあたる
   for (let step = 0; step < 5; step++) {
     const depth = startDepth + step * 2;
-    const state = startBattle(party, hp, maxHp, makePack(depth, rng));
+    const state = startBattle(party, hp, maxHp, makeFoe(depth, rng));
     let turns = 0;
     while (state.outcome === 'ongoing' && turns < TURN_CAP) {
       playTurn(state, rng);
@@ -184,7 +190,7 @@ export function playSortie(sectorId: number, startDepth: number, rng: Rng): Sort
   }
 
   // 区画の最深部のボス。雑魚と違って長期戦になるので、上限もターン数も別に持つ
-  const boss = startBattle(party, hp, maxHp, [makeBoss(sectorId, rng)]);
+  const boss = startBattle(party, hp, maxHp, makeBoss(sectorId, rng));
   let bossTurns = 0;
   while (boss.outcome === 'ongoing' && bossTurns < BOSS_TURN_CAP) {
     playTurn(boss, rng);

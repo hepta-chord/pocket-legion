@@ -42,11 +42,14 @@ export interface BattleView {
   manaCap: number;
   guard: number;
   guardMax: number;
+  /** バリアが張られているか。あれば次の敵の攻撃を 1 回無効化する */
+  barrier: boolean;
   turn: number;
-  /** 選択中の敵 */
-  target: number;
-  enemies: {
+  /** 敵は常に 1 体。対象選択を無くすための仕様なので単数で持つ */
+  enemy: {
     name: string;
+    /** 元の頭数。2 以上なら群れなので、名前に添えて規模を見せる (例: 魔物の群れ (3)) */
+    groupSize: number;
     hp: number;
     maxHp: number;
     /** 表示用。'物理' | '魔法' | null */
@@ -54,7 +57,7 @@ export interface BattleView {
     /** 大技まであと何ターンか */
     countdown: number;
     alive: boolean;
-  }[];
+  };
   /** 前衛 6 枠。null は空きスロット */
   slots: ({
     name: string;

@@ -59,35 +59,32 @@ function button(label: string, action: Action, disabled = false): HTMLButtonElem
 function renderEnemies(s: BattleView): void {
   const box = document.createElement('div');
   box.className = 'enemies';
-  s.enemies.forEach((e, i) => {
-    const row = document.createElement('button');
-    row.type = 'button';
-    row.className = 'enemy';
-    if (!e.alive) row.classList.add('dead');
-    if (e.alive && i === s.target) row.classList.add('selected');
-    if (e.alive && e.countdown === 1) row.classList.add('warn');
-    row.disabled = !e.alive || swapMode;
+  const e = s.enemy;
+  const row = document.createElement('div');
+  row.className = 'enemy';
+  if (!e.alive) row.classList.add('dead');
+  if (e.alive && e.countdown === 1) row.classList.add('warn');
 
-    const name = document.createElement('span');
-    name.className = 'enemy-name';
-    name.textContent = e.resist ? `${e.name} [${e.resist}耐性]` : e.name;
-    row.append(name);
+  const name = document.createElement('span');
+  name.className = 'enemy-name';
+  // 群れは頭数を添えて規模を見せる。単体 (groupSize 1) は素の名前のまま
+  const label = e.groupSize > 1 ? `${e.name} (${e.groupSize})` : e.name;
+  name.textContent = e.resist ? `${label} [${e.resist}耐性]` : label;
+  row.append(name);
 
-    const hp = document.createElement('span');
-    hp.className = 'enemy-hp';
-    hp.textContent = e.alive ? `HP ${e.hp}/${e.maxHp}` : '撃破';
-    row.append(hp);
+  const hp = document.createElement('span');
+  hp.className = 'enemy-hp';
+  hp.textContent = e.alive ? `HP ${e.hp}/${e.maxHp}` : '撃破';
+  row.append(hp);
 
-    if (e.alive) {
-      const cd = document.createElement('span');
-      cd.className = 'enemy-cd';
-      cd.textContent = `大技まであと ${e.countdown}`;
-      row.append(cd);
-    }
+  if (e.alive) {
+    const cd = document.createElement('span');
+    cd.className = 'enemy-cd';
+    cd.textContent = `大技まであと ${e.countdown}`;
+    row.append(cd);
+  }
 
-    if (e.alive && !swapMode) row.addEventListener('click', () => act({ type: 'battle-target', index: i }));
-    box.append(row);
-  });
+  box.append(row);
   panel.append(box);
 }
 
@@ -260,7 +257,7 @@ function renderSwapPanel(s: BattleView): void {
 }
 
 function renderBattle(s: BattleView): void {
-  status.textContent = `HP ${s.hp}/${s.maxHp}  マナ ${s.mana}/${s.manaCap}  ガード ${s.guard}/${s.guardMax}  ターン ${s.turn}`;
+  status.textContent = `HP ${s.hp}/${s.maxHp}  マナ ${s.mana}/${s.manaCap}  ガード ${s.guard}/${s.guardMax}  バリア ${s.barrier ? '有' : '無'}  ターン ${s.turn}`;
   renderEnemies(s);
   if (swapMode) {
     renderSwapPanel(s);

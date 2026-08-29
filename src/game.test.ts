@@ -96,6 +96,16 @@ describe('出撃', () => {
   });
 });
 
+describe('初期の 2 人', () => {
+  it('主人公と相棒が必ず前衛にいる', () => {
+    const state = fresh();
+    step(state, { type: 'sortie', sectorId: 1 });
+    const front = state.run!.party.front;
+    expect(front.some((f) => f?.id === 'hero')).toBe(true);
+    expect(front.some((f) => f?.id === 'mate')).toBe(true);
+  });
+});
+
 describe('区画の解放', () => {
   it('ボスを倒すと次の区画が開く', () => {
     const state = fresh();
@@ -113,8 +123,8 @@ describe('区画の解放', () => {
     expect(state.battle).not.toBeNull();
     expect(state.battleKind).toBe('boss');
 
-    // 敵を全滅させ、決着判定 (checkVictory) を挟む行動を 1 回叩いて勝ちにする
-    for (const e of state.battle!.enemies) e.hp = 0;
+    // 敵を倒し、決着判定 (checkVictory) を挟む行動を 1 回叩いて勝ちにする
+    state.battle!.enemy.hp = 0;
     step(state, { type: 'battle-skill', slot: 0, skill: 0 });
 
     expect(state.battle).toBeNull();
@@ -153,7 +163,7 @@ describe('戦闘への遷移', () => {
     step(state, { type: 'resolve' });
     const goldBefore = state.run!.gold;
 
-    for (const e of state.battle!.enemies) e.hp = 0;
+    state.battle!.enemy.hp = 0;
     step(state, { type: 'battle-skill', slot: 0, skill: 0 });
 
     expect(state.battle).toBeNull();
@@ -210,23 +220,6 @@ describe('戦闘への遷移', () => {
     expect(state.battle).toBeNull();
     expect(state.run).toBeNull();
     expect(state.result?.won).toBe(false);
-  });
-
-  it('選択中の敵が倒れると、生きている敵へ対象が移る', () => {
-    const state = fresh();
-    step(state, { type: 'sortie', sectorId: 1 });
-    forceBattleEvent(state, 'elite');
-    step(state, { type: 'resolve' });
-    const b = state.battle!;
-    // 敵が 1 体しかいなければ意味が無いテストなので、2 体に揃える
-    if (b.enemies.length < 2) b.enemies.push({ ...b.enemies[0], hp: b.enemies[0].def.maxHp });
-    b.enemies[0].hp = 0;
-    expect(state.battleTarget).toBe(0);
-
-    step(state, { type: 'battle-skill', slot: 0, skill: 0 });
-
-    expect(state.battleTarget).not.toBe(0);
-    expect(b.enemies[state.battleTarget].hp).toBeGreaterThan(0);
   });
 });
 

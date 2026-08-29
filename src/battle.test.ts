@@ -76,6 +76,24 @@ const CHEER: ActionSkillDef = {
   effect: { kind: 'buff', power: 0.5 },
 };
 
+const STORM: ActionSkillDef = {
+  id: 'storm',
+  name: '火群',
+  category: 'magic',
+  baseCost: 2,
+  effect: { kind: 'attack', target: 'all', power: 1 },
+};
+
+const BARRIER: ActionSkillDef = {
+  id: 'barrier',
+  name: '守りの膜',
+  category: 'magic',
+  baseCost: 2,
+  effect: { kind: 'barrier' },
+};
+
+const COVER: PassiveDef = { id: 'cover', name: '身代わり', hooks: { cover: true } };
+
 function fighter(id: string, faction: Faction = 'kingdom', skills: ActionSkillDef[] = [SLASH], passives: PassiveDef[] = []): Fighter {
   return {
     id,
@@ -100,13 +118,20 @@ function enemy(over: Partial<EnemyDef> = {}): EnemyDef {
     bigEvery: 99,
     bigMul: 2,
     guardBreak: 1,
+    groupSize: 1,
+    isBoss: false,
     ...over,
   };
 }
 
-function battleOf(front: Fighter[], reserve: Fighter[] = [], enemies: EnemyDef[] = [enemy()]) {
+/** ボスの大技はダウンを起こすので、コンテンツ側の敵と分けて用意する */
+function boss(over: Partial<EnemyDef> = {}): EnemyDef {
+  return enemy({ isBoss: true, ...over });
+}
+
+function battleOf(front: Fighter[], reserve: Fighter[] = [], foe: EnemyDef = enemy()) {
   const party = newParty(front, reserve);
-  return startBattle(party, 100, 100, enemies);
+  return startBattle(party, 100, 100, foe);
 }
 
 // ---------------------------------------------------------------------------
@@ -157,14 +182,14 @@ describe('魔法・必殺スキル', () => {
   it('使うたび出撃を通してコストが上がり、次の戦闘にも残る', () => {
     const f = fighter('a', 'kingdom', [FIRE]);
     const party = newParty([f]);
-    let state = startBattle(party, 100, 100, [enemy()]);
+    let state = startBattle(party, 100, 100, enemy());
     const rng = new Rng(1);
     state.mana = 10;
     useSkill(state, 0, 0, rng);
     expect(effectiveCost(f.skills[0])).toBe(3);
     endTurn(state, rng);
     expect(effectiveCost(f.skills[0])).toBe(3);
-    state = startBattle(party, 100, 100, [enemy()]);
+    state = startBattle(party, 100, 100, enemy());
     expect(effectiveCost(f.skills[0])).toBe(3);
   });
 
@@ -210,11 +235,11 @@ describe('ガード', () => {
 
   it('積むほど被ダメージが減る', () => {
     const foe = enemy({ attack: 20 });
-    const bare = battleOf([fighter('a')], [], [foe]);
+    const bare = battleOf([fighter('a')], [], foe);
     endTurn(bare, new Rng(7));
     const lostBare = 100 - bare.hp;
 
-    const guarded = battleOf([fighter('a')], [], [foe]);
+    const guarded = battleOf([fighter('a')], [], foe);
     guarded.mana = 10;
     for (let i = 0; i < 4; i++) useGuard(guarded);
     endTurn(guarded, new Rng(7));
@@ -224,22 +249,22 @@ describe('ガード', () => {
     expect(lostGuarded).toBeLessThan(lostBare * 0.3);
   });
 
-  it('大技のダウンは guardBreak 枚積んで初めて防げる', () => {
-    const foe = enemy({ attack: 5, bigEvery: 1, guardBreak: 3 });
+  it('大技のダウンは guardBreak 枚積んで初めて防げる (ボスの大技)', () => {
+    const foe = boss({ attack: 5, bigEvery: 1, guardBreak: 3 });
 
-    const bare = battleOf([fighter('a')], [fighter('b', 'kingdom')], [foe]);
+    const bare = battleOf([fighter('a')], [fighter('b', 'kingdom')], foe);
     endTurn(bare, new Rng(1));
     expect(bare.stats.downs).toBe(1);
 
     // 足りない枚数はダメージこそ減らすが、ダウンは止められない
-    const short = battleOf([fighter('a')], [fighter('b', 'kingdom')], [foe]);
+    const short = battleOf([fighter('a')], [fighter('b', 'kingdom')], foe);
     short.mana = 10;
     useGuard(short);
     useGuard(short);
     endTurn(short, new Rng(1));
     expect(short.stats.downs).toBe(1);
 
-    const held = battleOf([fighter('a')], [fighter('b', 'kingdom')], [foe]);
+    const held = battleOf([fighter('a')], [fighter('b', 'kingdom')], foe);
     held.mana = 10;
     for (let i = 0; i < 3; i++) useGuard(held);
     endTurn(held, new Rng(1));
@@ -282,35 +307,35 @@ describe('交代', () => {
 
 describe('ダメージ', () => {
   it('耐性は該当属性のダメージを減らす', () => {
-    const bare = battleOf([fighter('a', 'kingdom', [FIRE])], [], [enemy()]);
+    const bare = battleOf([fighter('a', 'kingdom', [FIRE])], [], enemy());
     useSkill(bare, 0, 0, new Rng(5));
-    const plain = 999 - bare.enemies[0].hp;
+    const plain = 999 - bare.enemy.hp;
 
-    const walled = battleOf([fighter('a', 'kingdom', [FIRE])], [], [enemy({ resist: 'magic' })]);
+    const walled = battleOf([fighter('a', 'kingdom', [FIRE])], [], enemy({ resist: 'magic' }));
     useSkill(walled, 0, 0, new Rng(5));
-    const resisted = 999 - walled.enemies[0].hp;
+    const resisted = 999 - walled.enemy.hp;
 
     expect(resisted).toBeLessThan(plain);
     expect(resisted).toBeGreaterThanOrEqual(Math.floor(plain / 2));
   });
 
   it('物理耐性は魔法に効かない', () => {
-    const state = battleOf([fighter('a', 'kingdom', [FIRE])], [], [enemy({ resist: 'physical' })]);
-    const twin = battleOf([fighter('a', 'kingdom', [FIRE])], [], [enemy()]);
+    const state = battleOf([fighter('a', 'kingdom', [FIRE])], [], enemy({ resist: 'physical' }));
+    const twin = battleOf([fighter('a', 'kingdom', [FIRE])], [], enemy());
     useSkill(state, 0, 0, new Rng(5));
     useSkill(twin, 0, 0, new Rng(5));
-    expect(state.enemies[0].hp).toBe(twin.enemies[0].hp);
+    expect(state.enemy.hp).toBe(twin.enemy.hp);
   });
 
   it('支援はターン中の攻撃を底上げし、ターン明けに消える', () => {
     const buffed = battleOf([fighter('a', 'kingdom', [CHEER, SLASH])]);
     useSkill(buffed, 0, 0, new Rng(9));
     useSkill(buffed, 0, 1, new Rng(5));
-    const withBuff = 999 - buffed.enemies[0].hp;
+    const withBuff = 999 - buffed.enemy.hp;
 
     const bare = battleOf([fighter('a', 'kingdom', [CHEER, SLASH])]);
     useSkill(bare, 0, 1, new Rng(5));
-    const without = 999 - bare.enemies[0].hp;
+    const without = 999 - bare.enemy.hp;
 
     expect(withBuff).toBeGreaterThan(without);
     endTurn(buffed, new Rng(1));
@@ -327,13 +352,13 @@ describe('ダメージ', () => {
 
 describe('決着', () => {
   it('敵を討ち果たすと勝ち', () => {
-    const state = battleOf([fighter('a')], [], [enemy({ maxHp: 1 })]);
+    const state = battleOf([fighter('a')], [], enemy({ maxHp: 1 }));
     useSkill(state, 0, 0, new Rng(1));
     expect(state.outcome).toBe('victory');
   });
 
   it('パーティ HP が尽きると全滅', () => {
-    const state = battleOf([fighter('a')], [], [enemy({ attack: 500 })]);
+    const state = battleOf([fighter('a')], [], enemy({ attack: 500 }));
     endTurn(state, new Rng(1));
     expect(state.outcome).toBe('wipe');
     expect(state.hp).toBe(0);
@@ -342,19 +367,19 @@ describe('決着', () => {
 
 describe('予告', () => {
   it('カウントが減り、大技のあと元に戻る', () => {
-    const state = battleOf([fighter('a')], [fighter('b', 'kingdom'), fighter('c', 'kingdom')], [enemy({ attack: 1, bigEvery: 2 })]);
+    const state = battleOf([fighter('a')], [fighter('b', 'kingdom'), fighter('c', 'kingdom')], enemy({ attack: 1, bigEvery: 2 }));
     const rng = new Rng(1);
-    expect(state.enemies[0].countdown).toBe(2);
+    expect(state.enemy.countdown).toBe(2);
     endTurn(state, rng);
-    expect(state.enemies[0].countdown).toBe(1);
+    expect(state.enemy.countdown).toBe(1);
     endTurn(state, rng);
-    expect(state.enemies[0].countdown).toBe(2);
+    expect(state.enemy.countdown).toBe(2);
   });
 
   it('パッシブが予告を延ばす', () => {
     const passive: PassiveDef = { id: 'p', name: '斥候', hooks: { telegraph: 1 } };
-    const state = battleOf([fighter('a', 'kingdom', [SLASH], [passive])], [], [enemy({ bigEvery: 2 })]);
-    expect(state.enemies[0].countdown).toBe(3);
+    const state = battleOf([fighter('a', 'kingdom', [SLASH], [passive])], [], enemy({ bigEvery: 2 }));
+    expect(state.enemy.countdown).toBe(3);
   });
 });
 
@@ -370,5 +395,110 @@ describe('編成の器', () => {
     refillFront(party);
     expect(party.front.filter(Boolean)).toHaveLength(2);
     expect(party.reserve).toHaveLength(0);
+  });
+});
+
+describe('大技のダウン (isBoss)', () => {
+  it('雑魚の大技はダメージだけで、ダウンを起こさない', () => {
+    const foe = enemy({ attack: 5, bigEvery: 1, guardBreak: 1, isBoss: false });
+    const state = battleOf([fighter('a')], [fighter('b', 'kingdom')], foe);
+    endTurn(state, new Rng(1));
+    expect(state.hp).toBeLessThan(100);
+    expect(state.stats.downs).toBe(0);
+  });
+
+  it('ボスの大技はダウンを起こす', () => {
+    const foe = boss({ attack: 5, bigEvery: 1, guardBreak: 1 });
+    const state = battleOf([fighter('a')], [fighter('b', 'kingdom')], foe);
+    endTurn(state, new Rng(1));
+    expect(state.stats.downs).toBe(1);
+  });
+});
+
+describe('バリア', () => {
+  it('次に来る攻撃を 1 回無効化し、ダメージもダウンも防いで消費される', () => {
+    const foe = boss({ attack: 50, bigEvery: 1, guardBreak: 1 });
+    const state = battleOf([fighter('a', 'kingdom', [BARRIER])], [fighter('b', 'kingdom')], foe);
+    state.mana = 10;
+    useSkill(state, 0, 0, new Rng(1));
+    expect(state.barrier).toBe(true);
+
+    endTurn(state, new Rng(1));
+
+    expect(state.hp).toBe(100);
+    expect(state.stats.downs).toBe(0);
+    expect(state.barrier).toBe(false);
+  });
+
+  it('同時に 2 枚は持てない', () => {
+    const state = battleOf([fighter('a', 'kingdom', [BARRIER])]);
+    state.mana = 10;
+    useSkill(state, 0, 0, new Rng(1));
+    expect(state.barrier).toBe(true);
+    expect(whyCannotUse(state, 0, 0)).toBe('バリアは既にある');
+
+    const manaBefore = state.mana;
+    const ok = useSkill(state, 0, 0, new Rng(1));
+    expect(ok).toBe(false);
+    expect(state.mana).toBe(manaBefore);
+  });
+
+  it('ターンをまたいで残る (ガードと違ってターン終了では消えない)', () => {
+    const foe = enemy({ maxHp: 1 });
+    const state = battleOf([fighter('a', 'kingdom', [BARRIER])], [], foe);
+    state.mana = 10;
+    useSkill(state, 0, 0, new Rng(1));
+    expect(state.barrier).toBe(true);
+
+    // 敵を倒れた扱いにして、このターンは敵の行動が起きないようにする
+    // (敵の攻撃が来なければバリアは消費されない。それでもターン明けの整理では消えないことを見る)
+    state.enemy.hp = 0;
+    endTurn(state, new Rng(1));
+
+    expect(state.turn).toBe(2);
+    expect(state.barrier).toBe(true);
+  });
+});
+
+describe('身代わり', () => {
+  it('前衛にいると、ボスの大技のダウンを肩代わりする', () => {
+    const attacker = fighter('a', 'kingdom');
+    const guardian = fighter('guard', 'kingdom', [SLASH], [COVER]);
+    // guardBreak を高くして、ガードでは防げない (必ずダウンが起きる) 状況にする
+    const foe = boss({ attack: 1, bigEvery: 1, guardBreak: 99 });
+    const state = battleOf([attacker, guardian], [], foe);
+
+    endTurn(state, new Rng(1));
+
+    expect(state.stats.downs).toBe(1);
+    expect(guardian.downed).toBe(true);
+    expect(attacker.downed).toBe(false);
+  });
+
+  it('自己ダウン代償のスキル (selfDown) は肩代わりしない', () => {
+    const attacker = fighter('a', 'kingdom', [SACRIFICE]);
+    const guardian = fighter('guard', 'kingdom', [SLASH], [COVER]);
+    const state = battleOf([attacker, guardian]);
+
+    useSkill(state, 0, 0, new Rng(1));
+
+    expect(attacker.downed).toBe(true);
+    expect(guardian.downed).toBe(false);
+  });
+});
+
+describe('全体攻撃と群れの規模', () => {
+  it('groupSize が大きい (群れの規模が大きい) ほど威力が伸びる', () => {
+    const solo = enemy({ groupSize: 1, maxHp: 99999 });
+    const pack = enemy({ groupSize: 3, maxHp: 99999 });
+    const soloState = battleOf([fighter('a', 'kingdom', [STORM])], [], solo);
+    const packState = battleOf([fighter('a', 'kingdom', [STORM])], [], pack);
+
+    useSkill(soloState, 0, 0, new Rng(5));
+    useSkill(packState, 0, 0, new Rng(5));
+
+    const soloDmg = 99999 - soloState.enemy.hp;
+    const packDmg = 99999 - packState.enemy.hp;
+    expect(packDmg).toBeGreaterThan(soloDmg);
   });
 });

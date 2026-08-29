@@ -17,7 +17,9 @@ export type SkillEffect =
   /** power は最大 HP に対する割合 */
   | { kind: 'heal'; power: number }
   /** power はターン中の攻撃倍率への加算 */
-  | { kind: 'buff'; power: number };
+  | { kind: 'buff'; power: number }
+  /** 次に来る敵の攻撃を 1 回無効化する。ダウンも防ぐ */
+  | { kind: 'barrier' };
 
 export interface ActionSkillDef {
   id: string;
@@ -51,5 +53,7 @@ export interface PassiveDef {
     guardRate?: number;
     /** 敵の大技の予告を延ばすターン数。戦闘開始時に 1 度だけ効く。負ならデメリット */
     telegraph?: number;
+    /** ボスの大技のダウンを、前衛にいる限り自動で肩代わりする (先頭の 1 人だけ) */
+    cover?: boolean;
   };
 }

@@ -21,14 +21,15 @@ import {
 } from './battle';
 import { FACTION_NAMES } from './data/factions';
 import type { EventKind } from './data/events';
-import { makeBoss, makePack } from './data/enemies';
+import { makeBoss, makeFoe } from './data/enemies';
 import { SECTORS, sectorById } from './data/sectors';
 import { hashSeed, Rng } from './rng';
 import { advance, damage, heal, isWiped, sectorOf, startRun, type RunState } from './run';
 import type { BattleView, LogLineView, ViewModel } from './view';
 
-// 戦闘 (RunState.party) が加わって古いセーブと形が合わなくなったので、区切りを上げて捨てる
-export const SAVE_VERSION = 2;
+// 戦闘を 1 対 1 に改めて BattleState.enemies を enemy (単数) にし、battleTarget も
+// 無くなって古いセーブと形が合わなくなったので、区切りを上げて捨てる
+export const SAVE_VERSION = 3;
 
 export type Action =
   | { type: 'sortie'; sectorId: number }
@@ -38,7 +39,6 @@ export type Action =
   | { type: 'dismiss' }
   | { type: 'battle-skill'; slot: number; skill: number }
   | { type: 'battle-guard' }
-  | { type: 'battle-target'; index: number }
   | { type: 'battle-swap'; moves: SwapMove[] }
   | { type: 'battle-end-turn' };
 
@@ -56,8 +56,6 @@ export interface GameState {
   battle: BattleState | null;
   /** battle が何の遭遇から始まったか。battle が null のときは null */
   battleKind: BattleKind | null;
-  /** 選択中の敵の添字。戦闘開始時と対象が死んだときに、生きている先頭へ寄せ直す */
-  battleTarget: number;
   /** 出撃を終えたときの結果。画面を閉じるまで残る */
   result: { won: boolean; depth: number; gold: number } | null;
   log: LogLineView[];
@@ -75,7 +73,6 @@ export function newGame(seed: string): GameState {
     run: null,
     battle: null,
     battleKind: null,
-    battleTarget: 0,
     result: null,
     log: [{ kind: 'info', text: '迷宮都市に着いた。' }],
   };
@@ -141,19 +138,9 @@ function finishRun(state: GameState, won: boolean): void {
 // ---------------------------------------------------------------------------
 // 戦闘
 
-/** 選択中の敵が倒れていたら、生きている先頭に寄せ直す */
-function syncBattleTarget(state: GameState): void {
-  const b = state.battle;
-  if (!b) return;
-  if (b.enemies[state.battleTarget]?.hp > 0) return;
-  const alive = b.enemies.findIndex((e) => e.hp > 0);
-  if (alive >= 0) state.battleTarget = alive;
-}
-
-function enterBattle(state: GameState, run: RunState, kind: BattleKind, enemies: EnemyDef[], line: string): void {
-  state.battle = startBattle(run.party, run.hp, run.maxHp, enemies);
+function enterBattle(state: GameState, run: RunState, kind: BattleKind, enemyDef: EnemyDef, line: string): void {
+  state.battle = startBattle(run.party, run.hp, run.maxHp, enemyDef);
   state.battleKind = kind;
-  state.battleTarget = 0;
   addLog(state, 'warn', line);
 }
 
@@ -161,7 +148,6 @@ function enterBattle(state: GameState, run: RunState, kind: BattleKind, enemies:
 function settleBattle(state: GameState, run: RunState, rng: Rng): void {
   const b = state.battle;
   if (!b) return;
-  syncBattleTarget(state);
   if (b.outcome === 'ongoing') return;
 
   // 戦闘中は battle.log をその場で見せているだけなので、抜けるときにまとめて本編ログへ移す
@@ -229,15 +215,15 @@ export function step(state: GameState, action: Action): void {
       if (!run || state.battle) break;
       if (run.atBoss) {
         const boss = makeBoss(run.sectorId, rng);
-        enterBattle(state, run, 'boss', [boss], `${boss.name} が立ちはだかる。`);
+        enterBattle(state, run, 'boss', boss, `${boss.name} が立ちはだかる。`);
         break;
       }
       if (!run.pending) break;
       const kind = run.pending.kind;
       if (kind === 'battle' || kind === 'elite') {
         run.pending = null;
-        const enemies = makePack(run.depth, rng, kind === 'elite');
-        enterBattle(state, run, kind, enemies, kind === 'elite' ? '影が立ちはだかる。' : '魔物が立ちはだかる。');
+        const foe = makeFoe(run.depth, rng, kind === 'elite');
+        enterBattle(state, run, kind, foe, `${foe.name} が立ちはだかる。`);
         break;
       }
       const out = resolveEvent(run, kind, rng);
@@ -269,7 +255,7 @@ export function step(state: GameState, action: Action): void {
       const run = state.run;
       const b = state.battle;
       if (!run || !b) break;
-      useSkill(b, action.slot, action.skill, rng, state.battleTarget);
+      useSkill(b, action.slot, action.skill, rng);
       settleBattle(state, run, rng);
       break;
     }
@@ -278,14 +264,6 @@ export function step(state: GameState, action: Action): void {
       const b = state.battle;
       if (!b) break;
       useGuard(b);
-      break;
-    }
-
-    case 'battle-target': {
-      const b = state.battle;
-      if (!b) break;
-      const e = b.enemies[action.index];
-      if (e && e.hp > 0) state.battleTarget = action.index;
       break;
     }
 
@@ -324,7 +302,8 @@ function skillNote(oncePerSortie: boolean | undefined, selfDown: boolean | undef
   return tags.length > 0 ? tags.join('・') : null;
 }
 
-function toBattleView(b: BattleState, target: number): BattleView {
+function toBattleView(b: BattleState): BattleView {
+  const e = b.enemy;
   return {
     kind: 'battle',
     hp: b.hp,
@@ -333,16 +312,17 @@ function toBattleView(b: BattleState, target: number): BattleView {
     manaCap: MANA_CAP,
     guard: b.guard,
     guardMax: GUARD_MAX,
+    barrier: b.barrier,
     turn: b.turn,
-    target,
-    enemies: b.enemies.map((e) => ({
+    enemy: {
       name: e.def.name,
+      groupSize: e.def.groupSize,
       hp: e.hp,
       maxHp: e.def.maxHp,
       resist: resistLabel(e.def.resist),
       countdown: e.countdown,
       alive: e.hp > 0,
-    })),
+    },
     slots: b.party.front.map((f, slot) => {
       if (!f) return null;
       return {
@@ -373,7 +353,7 @@ export function toViewModel(state: GameState): ViewModel {
     // 戦闘中は本編ログの末尾に battle.log をつないで、直近の場面が読めるようにする。
     // 本編ログそのものへは決着時 (settleBattle) にまとめて移すので、ここでは二重に積まない
     const log = [...state.log, ...state.battle.log].slice(-LOG_LIMIT);
-    return { screen: toBattleView(state.battle, state.battleTarget), log, seed: state.seed };
+    return { screen: toBattleView(state.battle), log, seed: state.seed };
   }
 
   const log = [...state.log];

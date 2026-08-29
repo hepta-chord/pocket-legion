@@ -26,12 +26,18 @@ export interface RunState {
 }
 
 /**
- * 出撃メンバーを組む。編成画面はマイルストーン 4 なので、今は CHARACTERS の先頭 10 人
- * (前衛 6 + 控え 4) で固定する。
+ * 出撃メンバーを組む。編成画面はマイルストーン 4 なので、今は CHARACTERS の先頭から
+ * 固定で 10 人 (前衛 6 + 控え 4) を選ぶ。
+ * 主人公と相棒は出撃を通してすり減らない下支えなので、必ず前衛に入れる
+ * (CHARACTERS の並び順に頼らず、id で明示的に拾う)。
  */
 function defaultParty(): Party {
-  const picked = CHARACTERS.slice(0, 10).map(buildFighter);
-  return newParty(picked.slice(0, 6), picked.slice(6));
+  const hero = CHARACTERS.find((c) => c.id === 'hero')!;
+  const mate = CHARACTERS.find((c) => c.id === 'mate')!;
+  const rest = CHARACTERS.filter((c) => c.id !== 'hero' && c.id !== 'mate').slice(0, 8).map(buildFighter);
+  const front = [buildFighter(hero), buildFighter(mate), ...rest.slice(0, 4)];
+  const reserve = rest.slice(4, 8);
+  return newParty(front, reserve);
 }
 
 export function startRun(sectorId: number): RunState {

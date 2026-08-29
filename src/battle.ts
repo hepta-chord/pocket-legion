@@ -116,8 +116,17 @@ export interface EnemyDef {
    * 1 枚で防げてしまうと毎ターンの払い出し (3) で予告を必ず無効化でき、
    * ダウンも交代も起きなくなる。強い敵ほど多く積ませて、
    * マナの持ち越しと 4 枚ガードが「予告への回答」として働くようにする。
+   * ボスでしか大技のダウンが起きなくなった今もフィールドとしては維持する
+   * (雑魚の大技はダメージ軽減の計算にだけ使われる)。
    */
   guardBreak: number;
+  /**
+   * 元の頭数。敵は常に 1 体として戦うが、群れの規模は全体攻撃の威力に効かせる
+   * (敵の表示にもそのまま出す)。1 なら単体
+   */
+  groupSize: number;
+  /** ボスだけが大技でダウンを起こす。雑魚の大技はダメージだけ */
+  isBoss: boolean;
 }
 
 export interface EnemyState {
@@ -137,10 +146,17 @@ export interface BattleState {
   /** パーティ HP。出撃をまたぐ値なので、戦闘後に呼び出し側が回収する */
   hp: number;
   maxHp: number;
-  enemies: EnemyState[];
+  /** 敵は常に 1 体。対象選択を無くすための仕様なので単数で持つ */
+  enemy: EnemyState;
   mana: number;
   /** このターンに積んだガードの枚数 */
   guard: number;
+  /**
+   * バリア。張ると次に来る敵の攻撃 (通常・大技どちらも) を 1 回まるごと無効化し、
+   * ダウンも防いで自身は消費される。予告を見てから張る札にするため、
+   * ガードと違ってターン終了では消さずターンをまたいで残す
+   */
+  barrier: boolean;
   /** 支援スキルによるターン中の攻撃倍率への加算 */
   buff: number;
   turn: number;
@@ -157,20 +173,21 @@ function addLog(state: BattleState, kind: LogLineView['kind'], text: string): vo
   if (state.log.length > LOG_LIMIT) state.log.splice(0, state.log.length - LOG_LIMIT);
 }
 
-export function startBattle(party: Party, hp: number, maxHp: number, enemyDefs: EnemyDef[]): BattleState {
+export function startBattle(party: Party, hp: number, maxHp: number, enemyDef: EnemyDef): BattleState {
   party.swapCooldown = 0;
   const telegraph = hookSum(party, 'telegraph');
   const state: BattleState = {
     party,
     hp,
     maxHp,
-    enemies: enemyDefs.map((d) => ({
-      def: d,
-      hp: d.maxHp,
-      countdown: Math.max(1, d.bigEvery + telegraph),
-    })),
+    enemy: {
+      def: enemyDef,
+      hp: enemyDef.maxHp,
+      countdown: Math.max(1, enemyDef.bigEvery + telegraph),
+    },
     mana: 0,
     guard: 0,
+    barrier: false,
     buff: 0,
     turn: 1,
     outcome: 'ongoing',
@@ -196,19 +213,18 @@ export function whyCannotUse(state: BattleState, slot: number, skillIndex: numbe
   const s = f.skills[skillIndex];
   if (!s) return 'スキルがない';
   if (s.def.oncePerSortie && s.spent) return 'この出撃ではもう使えない';
+  // バリアは同時に 1 枚しか持てない。マナを無駄にしないよう発動自体を止める
+  if (s.def.effect.kind === 'barrier' && state.barrier) return 'バリアは既にある';
   if (effectiveCost(s) > state.mana) return 'マナが足りない';
   return null;
 }
 
-function pickTarget(state: BattleState, wanted: number): EnemyState | null {
-  const at = state.enemies[wanted];
-  if (at && at.hp > 0) return at;
-  return state.enemies.find((e) => e.hp > 0) ?? null;
-}
-
 function hitEnemy(state: BattleState, attacker: Fighter, def: ActionSkillDef, enemy: EnemyState, rng: Rng): void {
   if (def.effect.kind !== 'attack') return;
-  const base = attacker.attack * def.effect.power * (1 + state.buff);
+  let base = attacker.attack * def.effect.power * (1 + state.buff);
+  // 敵は 1 体にまとめて表すが、全体攻撃は元の頭数 (groupSize) ぶん威力が伸びる。
+  // でないと「群れに強い」という全体攻撃の性格が消えるため
+  if (def.effect.target === 'all') base *= 1 + 0.3 * (enemy.def.groupSize - 1);
   let dmg = Math.round(base * (0.6 + 0.4 * rng.next())) - enemy.def.defense;
   const resisted = enemy.def.resist === elementOf(def);
   if (resisted) dmg = Math.round(dmg / 2);
@@ -220,13 +236,13 @@ function hitEnemy(state: BattleState, attacker: Fighter, def: ActionSkillDef, en
 
 function checkVictory(state: BattleState): void {
   if (state.outcome !== 'ongoing') return;
-  if (state.enemies.every((e) => e.hp <= 0)) {
+  if (state.enemy.hp <= 0) {
     state.outcome = 'victory';
     addLog(state, 'good', '敵を討ち果たした。');
   }
 }
 
-export function useSkill(state: BattleState, slot: number, skillIndex: number, rng: Rng, target = 0): boolean {
+export function useSkill(state: BattleState, slot: number, skillIndex: number, rng: Rng): boolean {
   if (whyCannotUse(state, slot, skillIndex) !== null) return false;
   const f = state.party.front[slot]!;
   const s = f.skills[skillIndex];
@@ -239,22 +255,21 @@ export function useSkill(state: BattleState, slot: number, skillIndex: number, r
 
   const e = s.def.effect;
   if (e.kind === 'attack') {
-    if (e.target === 'all') {
-      for (const enemy of state.enemies) if (enemy.hp > 0) hitEnemy(state, f, s.def, enemy, rng);
-    } else {
-      const enemy = pickTarget(state, target);
-      if (enemy) hitEnemy(state, f, s.def, enemy, rng);
-    }
+    if (state.enemy.hp > 0) hitEnemy(state, f, s.def, state.enemy, rng);
   } else if (e.kind === 'heal') {
     const back = Math.round(state.maxHp * e.power);
     state.hp = Math.min(state.maxHp, state.hp + back);
     addLog(state, 'good', `${f.name} の${s.def.name}。${back} 回復した。`);
-  } else {
+  } else if (e.kind === 'buff') {
     state.buff += e.power;
     addLog(state, 'good', `${f.name} の${s.def.name}。攻めが乗った。`);
+  } else {
+    state.barrier = true;
+    addLog(state, 'good', `${f.name} の${s.def.name}。バリアを張った。`);
   }
 
-  if (s.def.selfDown) downSlot(state, slot, rng, '代償に');
+  // selfDown は自分で選んで払う代償なので、身代わりの肩代わり (coverable) は効かせない
+  if (s.def.selfDown) downSlot(state, slot, rng, '代償に', false);
   checkVictory(state);
   return true;
 }
@@ -322,9 +337,21 @@ export function swapMembers(state: BattleState, moves: SwapMove[]): boolean {
 /**
  * ダウンさせ、控えの同陣営からランダムに 1 人を自動で入れる。
  * 同陣営が残っていなければ空きスロットになり、前衛がすべて空くと全滅扱いで負ける。
+ *
+ * coverable が true (ボスの大技によるダウン) のときだけ、身代わり (cover) を持つ
+ * キャラが前衛にいれば肩代わりする。自己ダウン代償のスキルは自分で選んで払う代償、
+ * 手動交代はプレイヤーが選んで下げる行為なので、どちらも肩代わりの対象にしない。
  */
-function downSlot(state: BattleState, slot: number, rng: Rng, cause: string): void {
+function downSlot(state: BattleState, slot: number, rng: Rng, cause: string, coverable: boolean): void {
   const party = state.party;
+  if (coverable) {
+    // 身代わり役は前衛の先頭にいる 1 人。複数いても最初に見つかった 1 人が引き受ける
+    const coverSlot = party.front.findIndex(
+      (m, i) => m && i !== slot && m.passives.some((p) => p.hooks.cover),
+    );
+    if (coverSlot >= 0) slot = coverSlot;
+  }
+
   const f = party.front[slot];
   if (!f) return;
   f.downed = true;
@@ -353,29 +380,42 @@ function downSlot(state: BattleState, slot: number, rng: Rng, cause: string): vo
 export function endTurn(state: BattleState, rng: Rng): void {
   if (state.outcome !== 'ongoing') return;
   const rate = guardRate(state);
+  const enemy = state.enemy;
 
-  for (const enemy of state.enemies) {
-    if (enemy.hp <= 0) continue;
+  if (enemy.hp > 0) {
     enemy.countdown -= 1;
 
     if (enemy.countdown <= 0) {
-      // 大技。ガードが 1 枚でも成立していればダウンは防げる
-      const raw = enemy.def.attack * enemy.def.bigMul;
-      const dmg = Math.max(0, Math.round(raw * (1 - rate)));
-      state.hp = Math.max(0, state.hp - dmg);
-      addLog(state, 'bad', `${enemy.def.name} の大技。${dmg} 受けた。`);
-      if (state.guard >= enemy.def.guardBreak) {
-        addLog(state, 'good', 'ガードがダウンを防いだ。');
+      // 大技
+      if (state.barrier) {
+        state.barrier = false;
+        addLog(state, 'good', `バリアが${enemy.def.name}の大技を防いだ。`);
       } else {
-        const occupied = state.party.front.flatMap((f, i) => (f ? [i] : []));
-        if (occupied.length > 0) downSlot(state, rng.pick(occupied), rng, '大技で');
+        // ガードが guardBreak 枚成立していればダウンは防げる (ボスの大技だけ)
+        const raw = enemy.def.attack * enemy.def.bigMul;
+        const dmg = Math.max(0, Math.round(raw * (1 - rate)));
+        state.hp = Math.max(0, state.hp - dmg);
+        addLog(state, 'bad', `${enemy.def.name} の大技。${dmg} 受けた。`);
+        if (enemy.def.isBoss) {
+          if (state.guard >= enemy.def.guardBreak) {
+            addLog(state, 'good', 'ガードがダウンを防いだ。');
+          } else {
+            const occupied = state.party.front.flatMap((f, i) => (f ? [i] : []));
+            if (occupied.length > 0) downSlot(state, rng.pick(occupied), rng, '大技で', true);
+          }
+        }
       }
       enemy.countdown = enemy.def.bigEvery;
     } else {
-      const raw = Math.round(enemy.def.attack * (0.5 + 0.5 * rng.next()));
-      const dmg = Math.max(0, Math.round(raw * (1 - rate)));
-      state.hp = Math.max(0, state.hp - dmg);
-      addLog(state, 'bad', `${enemy.def.name} の攻撃。${dmg} 受けた。`);
+      if (state.barrier) {
+        state.barrier = false;
+        addLog(state, 'good', `バリアが${enemy.def.name}の攻撃を防いだ。`);
+      } else {
+        const raw = Math.round(enemy.def.attack * (0.5 + 0.5 * rng.next()));
+        const dmg = Math.max(0, Math.round(raw * (1 - rate)));
+        state.hp = Math.max(0, state.hp - dmg);
+        addLog(state, 'bad', `${enemy.def.name} の攻撃。${dmg} 受けた。`);
+      }
     }
 
     if (state.hp <= 0) {
@@ -386,7 +426,7 @@ export function endTurn(state: BattleState, rng: Rng): void {
     if (state.outcome !== 'ongoing') return;
   }
 
-  // ターン明けの整理
+  // ターン明けの整理。バリアは予告を見てから張る札にするため、ここでは消さない
   state.turn += 1;
   state.guard = 0;
   state.buff = 0;

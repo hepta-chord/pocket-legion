@@ -130,11 +130,10 @@ button:active:not(:disabled) {
   gap: 4px 10px;
   align-items: baseline;
   min-height: 44px;
-}
-
-.enemy.selected {
-  border-color: var(--fg);
-  background: #1f2630;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #161b22;
 }
 
 .enemy.dead {
