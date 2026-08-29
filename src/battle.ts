@@ -19,7 +19,7 @@ export const GUARD_MAX = 4;
 export const GUARD_RATES = [0, 0.4, 0.6, 0.75, 0.85] as const;
 export const SWAP_COOLDOWN = 3;
 /** パーティ最大 HP の、編成に依らない土台 */
-export const PARTY_BASE_HP = 30;
+export const PARTY_BASE_HP = 60;
 
 // ---------------------------------------------------------------------------
 // パーティ
@@ -111,6 +111,13 @@ export interface EnemyDef {
   bigEvery: number;
   /** 大技の威力。通常攻撃に対する倍率 */
   bigMul: number;
+  /**
+   * 大技のダウンを防ぐのに要るガードの枚数。
+   * 1 枚で防げてしまうと毎ターンの払い出し (3) で予告を必ず無効化でき、
+   * ダウンも交代も起きなくなる。強い敵ほど多く積ませて、
+   * マナの持ち越しと 4 枚ガードが「予告への回答」として働くようにする。
+   */
+  guardBreak: number;
 }
 
 export interface EnemyState {
@@ -357,11 +364,11 @@ export function endTurn(state: BattleState, rng: Rng): void {
       const dmg = Math.max(0, Math.round(raw * (1 - rate)));
       state.hp = Math.max(0, state.hp - dmg);
       addLog(state, 'bad', `${enemy.def.name} の大技。${dmg} 受けた。`);
-      if (state.guard === 0) {
+      if (state.guard >= enemy.def.guardBreak) {
+        addLog(state, 'good', 'ガードがダウンを防いだ。');
+      } else {
         const occupied = state.party.front.flatMap((f, i) => (f ? [i] : []));
         if (occupied.length > 0) downSlot(state, rng.pick(occupied), rng, '大技で');
-      } else {
-        addLog(state, 'good', 'ガードがダウンを防いだ。');
       }
       enemy.countdown = enemy.def.bigEvery;
     } else {

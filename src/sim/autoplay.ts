@@ -8,6 +8,7 @@
 
 import {
   endTurn,
+  GUARD_MAX,
   newParty,
   partyMaxHp,
   refillFront,
@@ -73,9 +74,12 @@ function driedUp(state: BattleState, slot: number): boolean {
 }
 
 function playTurn(state: BattleState, rng: Rng): void {
-  const bigIncoming = state.enemies.some((e) => e.hp > 0 && e.countdown === 1);
-  if (bigIncoming) {
-    const want = state.hp < state.maxHp * 0.5 ? 4 : 2;
+  // 予告が出ている敵のうち、最も重い guardBreak まで積めればダウンを止められる。
+  // 届かないなら軽減ぶんだけ取って、残りのマナは攻めに回す
+  const incoming = state.enemies.filter((e) => e.hp > 0 && e.countdown === 1);
+  if (incoming.length > 0) {
+    const need = Math.min(GUARD_MAX, Math.max(...incoming.map((e) => e.def.guardBreak)));
+    const want = state.mana >= need ? need : state.hp < state.maxHp * 0.5 ? 2 : 1;
     while (state.guard < want && useGuard(state)) {
       /* 積めるだけ積む */
     }
@@ -175,6 +179,8 @@ export interface SectorReport {
   avgBattlesWon: number;
   avgTurnsPerBattle: number;
   avgSwaps: number;
+  /** ダウンの総数。前衛全滅率が 0 のとき、そもそも消耗しているのかを切り分ける */
+  avgDowns: number;
   zeroSwapRate: number;
   annihilatedRate: number;
 }
@@ -185,6 +191,7 @@ export function measure(label: string, startDepth: number, sorties: number, seed
   let battles = 0;
   let turns = 0;
   let swaps = 0;
+  let downs = 0;
   let zeroSwap = 0;
   let annihilated = 0;
   for (let i = 0; i < sorties; i++) {
@@ -193,6 +200,7 @@ export function measure(label: string, startDepth: number, sorties: number, seed
     battles += r.battlesWon + (r.survived ? 0 : 1);
     turns += r.turns;
     swaps += r.swaps;
+    downs += r.downs;
     if (r.swaps === 0) zeroSwap += 1;
     if (r.annihilated) annihilated += 1;
   }
@@ -203,6 +211,7 @@ export function measure(label: string, startDepth: number, sorties: number, seed
     avgBattlesWon: battles / sorties,
     avgTurnsPerBattle: turns / battles,
     avgSwaps: swaps / sorties,
+    avgDowns: downs / sorties,
     zeroSwapRate: zeroSwap / sorties,
     annihilatedRate: annihilated / sorties,
   };

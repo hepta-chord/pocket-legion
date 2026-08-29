@@ -19,12 +19,16 @@ export function makePack(depth: number, rng: Rng, elite = false): EnemyDef[] {
     defs.push({
       id: `d${depth}-${i}`,
       name: elite ? `影${i + 1}` : `魔物${i + 1}`,
-      maxHp: Math.round(((26 + depth * 7) / count) * mul),
+      maxHp: Math.round(((45 + depth * 12) / count) * mul),
       attack: Math.round((4 + depth * 0.9) * mul),
       defense: Math.floor(depth / 5),
       resist,
       bigEvery: rng.int(3, 4),
       bigMul: 2.2,
+      // 1 枚で防げると毎ターンの払い出しで必ず無効化できてしまうので、下限を 2 枚にする。
+      // 個体ごとにばらつかせて、予告を見てから「これは止めに行くか、諦めて殴るか」を
+      // 選べるようにする。深いほど重くなり、強敵はさらに 1 枚積ませる
+      guardBreak: Math.min(4, rng.int(2, 4) + Math.floor(depth / 12) + (elite ? 1 : 0)),
     });
   }
   return defs;
@@ -35,13 +39,15 @@ interface BossSpec {
   maxHp: number;
   attack: number;
   defense: number;
+  /** ダウンを防ぐのに要るガードの枚数 */
+  guardBreak: number;
 }
 
 /** 区画ごとのボス。名前と強さは深度帯に合わせて 3 段階で決め打ちする */
 const BOSSES: readonly BossSpec[] = [
-  { name: '穴蜘蛛の女王', maxHp: 220, attack: 16, defense: 4 },
-  { name: '骨の王', maxHp: 420, attack: 26, defense: 7 },
-  { name: '深淵の使者', maxHp: 700, attack: 40, defense: 10 },
+  { name: '穴蜘蛛の女王', maxHp: 220, attack: 16, defense: 4, guardBreak: 3 },
+  { name: '骨の王', maxHp: 420, attack: 26, defense: 7, guardBreak: 4 },
+  { name: '深淵の使者', maxHp: 700, attack: 40, defense: 10, guardBreak: 4 },
 ];
 
 /** 区画ごとのボスを 1 体作る。雑魚より大幅に硬く、大技の間隔と威力も上げてある */
@@ -57,5 +63,6 @@ export function makeBoss(sectorId: number, rng: Rng): EnemyDef {
     resist,
     bigEvery: 3,
     bigMul: 2.5,
+    guardBreak: spec.guardBreak,
   };
 }

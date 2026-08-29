@@ -99,6 +99,7 @@ function enemy(over: Partial<EnemyDef> = {}): EnemyDef {
     resist: null,
     bigEvery: 99,
     bigMul: 2,
+    guardBreak: 1,
     ...over,
   };
 }
@@ -223,14 +224,24 @@ describe('ガード', () => {
     expect(lostGuarded).toBeLessThan(lostBare * 0.3);
   });
 
-  it('大技はガードが 1 枚でもあればダウンを防ぐ', () => {
-    const foe = enemy({ attack: 5, bigEvery: 1 });
-    const hit = battleOf([fighter('a')], [fighter('b', 'kingdom')], [foe]);
-    endTurn(hit, new Rng(1));
-    expect(hit.stats.downs).toBe(1);
+  it('大技のダウンは guardBreak 枚積んで初めて防げる', () => {
+    const foe = enemy({ attack: 5, bigEvery: 1, guardBreak: 3 });
+
+    const bare = battleOf([fighter('a')], [fighter('b', 'kingdom')], [foe]);
+    endTurn(bare, new Rng(1));
+    expect(bare.stats.downs).toBe(1);
+
+    // 足りない枚数はダメージこそ減らすが、ダウンは止められない
+    const short = battleOf([fighter('a')], [fighter('b', 'kingdom')], [foe]);
+    short.mana = 10;
+    useGuard(short);
+    useGuard(short);
+    endTurn(short, new Rng(1));
+    expect(short.stats.downs).toBe(1);
 
     const held = battleOf([fighter('a')], [fighter('b', 'kingdom')], [foe]);
-    useGuard(held);
+    held.mana = 10;
+    for (let i = 0; i < 3; i++) useGuard(held);
     endTurn(held, new Rng(1));
     expect(held.stats.downs).toBe(0);
   });
