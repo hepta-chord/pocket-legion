@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Rng } from './rng';
-import { advance, damage, heal, isWiped, PLACEHOLDER_MAX_HP, startRun } from './run';
+import { advance, damage, heal, isWiped, startRun } from './run';
 
 describe('advance', () => {
   it('進むたびに深度が 1 つ増え、イベントを 1 つ抱える', () => {
@@ -25,7 +25,7 @@ describe('HP', () => {
   it('回復は最大値で止まる', () => {
     const run = startRun(1);
     heal(run, 999);
-    expect(run.hp).toBe(PLACEHOLDER_MAX_HP);
+    expect(run.hp).toBe(run.maxHp);
   });
 
   it('被害は 0 で止まり、そこで全滅になる', () => {

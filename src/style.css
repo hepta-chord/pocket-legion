@@ -115,3 +115,121 @@ button:disabled {
 button:active:not(:disabled) {
   background: #1f2630;
 }
+
+/* 戦闘画面 -------------------------------------------------------------- */
+
+.enemies {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.enemy {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: baseline;
+  min-height: 44px;
+}
+
+.enemy.selected {
+  border-color: var(--fg);
+  background: #1f2630;
+}
+
+.enemy.dead {
+  opacity: 0.4;
+}
+
+.enemy.warn .enemy-cd {
+  color: var(--warn);
+}
+
+.enemy-name {
+  font-size: 15px;
+}
+
+.enemy-hp,
+.enemy-cd {
+  color: var(--dim);
+  font-size: 13px;
+}
+
+/* 前衛カード。1 枠 1 行、スキルは横並びのボタンにする */
+.front {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.card.empty {
+  color: var(--dim);
+  text-align: center;
+  padding: 14px;
+}
+
+.card-name {
+  margin: 0;
+  font-size: 14px;
+}
+
+.skills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.skill-btn {
+  flex: 1 1 auto;
+  min-width: 44px;
+  min-height: 44px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: center;
+  align-items: center;
+  justify-content: center;
+}
+
+.skill-label {
+  font-size: 14px;
+}
+
+.skill-btn.raised .skill-label {
+  color: var(--warn);
+}
+
+.skill-note {
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.skill-reason {
+  font-size: 11px;
+  color: var(--bad);
+}
+
+.controls {
+  display: flex;
+  gap: 8px;
+}
+
+.controls button {
+  flex: 1;
+  text-align: center;
+}
+
+.swap-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}

@@ -3,6 +3,8 @@
 // マップを持たないので、状態は「今どの区画のどの深度にいるか」と
 // 「未解決のイベントがあるか」だけで足りる。座標も向きも持たない。
 
+import { newParty, partyMaxHp, type Party } from './battle';
+import { buildFighter, CHARACTERS } from './data/characters';
 import { pickEvent, TOTAL_WEIGHT, type EventDef } from './data/events';
 import { sectorById, type Sector } from './data/sectors';
 import type { Rng } from './rng';
@@ -19,20 +21,31 @@ export interface RunState {
   pending: EventDef | null;
   /** ボスに挑む深度に着いた */
   atBoss: boolean;
+  /** 出撃メンバー。Fighter は出撃をまたいで生きるので、帰還処理は roster 側の仕事にする */
+  party: Party;
 }
 
-/** マイルストーン 4 で編成から算出するようになるまでの仮の最大 HP */
-export const PLACEHOLDER_MAX_HP = 60;
+/**
+ * 出撃メンバーを組む。編成画面はマイルストーン 4 なので、今は CHARACTERS の先頭 10 人
+ * (前衛 6 + 控え 4) で固定する。
+ */
+function defaultParty(): Party {
+  const picked = CHARACTERS.slice(0, 10).map(buildFighter);
+  return newParty(picked.slice(0, 6), picked.slice(6));
+}
 
 export function startRun(sectorId: number): RunState {
+  const party = defaultParty();
+  const maxHp = partyMaxHp(party);
   return {
     sectorId,
     depth: 1,
-    hp: PLACEHOLDER_MAX_HP,
-    maxHp: PLACEHOLDER_MAX_HP,
+    hp: maxHp,
+    maxHp,
     gold: 0,
     pending: null,
     atBoss: false,
+    party,
   };
 }
 

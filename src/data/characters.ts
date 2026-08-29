@@ -1,8 +1,9 @@
-// バランス計測用の仮キャラプール。
+// 本編とバランス計測 (sim/) が共有するキャラ定義。
 //
-// 本編のキャラ定義 (data/characters.ts) はマイルストーン 4 で入る。
-// それまでの計測は、docs/plan.md のスキル配分の指針
-// (物理は希少・必殺か代償と相方・アタッカーの主流は魔法) をなぞったこのプールで行う。
+// 陣営・レベル・入手経路を備えた 23 種の本実装はマイルストーン 4 で入る。
+// それまでは、docs/plan.md のスキル配分の指針
+// (物理は希少・必殺か代償と相方・アタッカーの主流は魔法) をなぞったこの仮プールを
+// 本編の出撃メンバーとしてもそのまま使う。
 
 import { makeSkillState, type Fighter } from '../battle';
 import type { Faction } from '../data/factions';
@@ -87,7 +88,7 @@ const spring: PassiveDef = { id: 'spring', name: '泉脈', hooks: { manaPerTurn:
 const wall: PassiveDef = { id: 'wall', name: '盾構え', hooks: { guardRate: 0.1 } };
 const scout: PassiveDef = { id: 'scout', name: '斥候', hooks: { telegraph: 1 } };
 
-interface PoolEntry {
+interface CharacterEntry {
   id: string;
   faction: Faction;
   attack: number;
@@ -96,7 +97,7 @@ interface PoolEntry {
   passives: PassiveDef[];
 }
 
-export const POOL: readonly PoolEntry[] = [
+export const CHARACTERS: readonly CharacterEntry[] = [
   // 王国: 攻撃魔法
   { id: 'k1', faction: 'kingdom', attack: 11, vitality: 5, skills: [bolt, blaze], passives: [] },
   { id: 'k2', faction: 'kingdom', attack: 10, vitality: 5, skills: [bolt], passives: [spring] },
@@ -116,7 +117,7 @@ export const POOL: readonly PoolEntry[] = [
   { id: 'f2', faction: 'frontier', attack: 13, vitality: 4, skills: [finale, bolt], passives: [] },
 ];
 
-export function buildFighter(entry: PoolEntry): Fighter {
+export function buildFighter(entry: CharacterEntry): Fighter {
   return {
     id: entry.id,
     name: entry.id,

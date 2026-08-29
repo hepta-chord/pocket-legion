@@ -18,34 +18,12 @@ import {
   whyCannotUse,
   effectiveCost,
   type BattleState,
-  type EnemyDef,
   type Party,
   type SwapMove,
 } from '../battle';
+import { buildFighter, CHARACTERS } from '../data/characters';
+import { makePack } from '../data/enemies';
 import { Rng } from '../rng';
-import { buildFighter, POOL } from './pool';
-
-// ---------------------------------------------------------------------------
-// 敵の生成
-
-function makePack(depth: number, rng: Rng): EnemyDef[] {
-  const count = rng.int(1, Math.min(3, 1 + Math.floor(depth / 5)));
-  const defs: EnemyDef[] = [];
-  for (let i = 0; i < count; i++) {
-    const resistRoll = rng.next();
-    defs.push({
-      id: `d${depth}-${i}`,
-      name: `魔物${i + 1}`,
-      maxHp: Math.round((26 + depth * 7) / count),
-      attack: Math.round(4 + depth * 0.9),
-      defense: Math.floor(depth / 5),
-      resist: resistRoll < 0.15 ? 'physical' : resistRoll < 0.3 ? 'magic' : null,
-      bigEvery: rng.int(3, 4),
-      bigMul: 2.2,
-    });
-  }
-  return defs;
-}
 
 // ---------------------------------------------------------------------------
 // 貪欲な行動方針
@@ -151,7 +129,7 @@ const TURN_CAP = 25;
 
 export function playSortie(startDepth: number, rng: Rng): SortieResult {
   // 12 人のプールから 10 人を無作為に連れて行く
-  const picked = [...POOL]
+  const picked = [...CHARACTERS]
     .map((e) => ({ e, key: rng.next() }))
     .sort((a, b) => a.key - b.key)
     .slice(0, 10)
