@@ -19,7 +19,7 @@ export const GUARD_MAX = 4;
 export const GUARD_RATES = [0, 0.25, 0.5, 0.75, 0.9] as const;
 export const SWAP_COOLDOWN = 3;
 /** パーティ最大 HP の、編成に依らない土台 */
-export const PARTY_BASE_HP = 200;
+export const PARTY_BASE_HP = 2000;
 
 // ---------------------------------------------------------------------------
 // パーティ
@@ -248,8 +248,9 @@ export function useSkill(state: BattleState, slot: number, skillIndex: number, r
   const s = f.skills[skillIndex];
   state.mana -= effectiveCost(s);
 
-  // 系統ごとのコスト上昇。ここが消耗の正体になる
-  if (s.def.category === 'physical') s.turnBump += 1;
+  // 系統ごとのコスト上昇。魔法・必殺は青天井で、ここが出撃を通した消耗の正体になる。
+  // 物理は +1 で頭打ちにして、2 発目からは 1 マナで連打できる主力の手数にする
+  if (s.def.category === 'physical') s.turnBump = Math.min(1, s.turnBump + 1);
   else s.sortieBump += 1;
   if (s.def.oncePerSortie) s.spent = true;
 

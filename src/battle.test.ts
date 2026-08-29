@@ -155,7 +155,7 @@ describe('マナ', () => {
 });
 
 describe('物理スキル', () => {
-  it('同一ターン内の連打はコストが 1 ずつ上がり、ターン明けに戻る', () => {
+  it('連打で 1 上がるが +1 で頭打ちになり、ターン明けに戻る', () => {
     const state = battleOf([fighter('a')]);
     const rng = new Rng(1);
     const skill = state.party.front[0]!.skills[0];
@@ -163,8 +163,9 @@ describe('物理スキル', () => {
     useSkill(state, 0, 0, rng);
     expect(effectiveCost(skill)).toBe(1);
     useSkill(state, 0, 0, rng);
-    expect(effectiveCost(skill)).toBe(2);
-    expect(state.mana).toBe(MANA_PER_TURN - 1);
+    expect(effectiveCost(skill)).toBe(1);
+    useSkill(state, 0, 0, rng);
+    expect(state.mana).toBe(MANA_PER_TURN - 2);
     endTurn(state, rng);
     expect(effectiveCost(skill)).toBe(0);
   });

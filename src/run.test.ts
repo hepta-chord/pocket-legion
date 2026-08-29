@@ -24,13 +24,13 @@ describe('advance', () => {
 describe('HP', () => {
   it('回復は最大値で止まる', () => {
     const run = startRun(1);
-    heal(run, 999);
+    heal(run, 99999);
     expect(run.hp).toBe(run.maxHp);
   });
 
   it('被害は 0 で止まり、そこで全滅になる', () => {
     const run = startRun(1);
-    damage(run, 999);
+    damage(run, 99999);
     expect(run.hp).toBe(0);
     expect(isWiped(run)).toBe(true);
   });
