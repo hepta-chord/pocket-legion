@@ -27,10 +27,10 @@ export function makeFoe(depth: number, rng: Rng, elite = false): EnemyDef {
     name: groupSize > 1 ? packName : soloName,
     // 今まで「1 体あたり (45 + depth*12) / count」を count 体だったので、
     // 1 体にまとめると合計は count が消えて 45 + depth*12 になる
-    maxHp: Math.round((45 + depth * 12) * mul),
+    maxHp: Math.round((60 + depth * 16) * mul),
     // 今まで count 体がそれぞれ (4 + depth*0.9) で殴っていたので、
     // まとめると (4 + depth*0.9) * groupSize になる
-    attack: Math.round((4 + depth * 0.9) * groupSize * mul),
+    attack: Math.round((4 + depth * 0.9) * 1.4 * groupSize * mul),
     defense: Math.floor(depth / 5),
     resist,
     bigEvery: rng.int(3, 4),
@@ -56,12 +56,20 @@ interface BossSpec {
 
 /** 区画ごとのボス。名前と強さは深度帯に合わせて 3 段階で決め打ちする */
 const BOSSES: readonly BossSpec[] = [
-  { name: '穴蜘蛛の女王', maxHp: 220, attack: 16, defense: 4, guardBreak: 3 },
-  { name: '骨の王', maxHp: 420, attack: 26, defense: 7, guardBreak: 4 },
-  { name: '深淵の使者', maxHp: 700, attack: 40, defense: 10, guardBreak: 4 },
+  { name: '穴蜘蛛の女王', maxHp: 1600, attack: 4, defense: 4, guardBreak: 3 },
+  { name: '骨の王', maxHp: 3000, attack: 7, defense: 7, guardBreak: 4 },
+  { name: '深淵の使者', maxHp: 5000, attack: 10, defense: 10, guardBreak: 4 },
 ];
 
-/** 区画ごとのボスを 1 体作る。雑魚より大幅に硬く、大技の間隔と威力も上げてある */
+/**
+ * 区画ごとのボスを 1 体作る。
+ *
+ * 50〜100 ターンの消耗戦にするため、通常攻撃は雑魚よりずっと軽い。
+ * 長期戦で成立する 1 ターンあたりの被害はパーティ HP の予算を戦闘の長さで割った値で、
+ * どうしても小さくなるため。
+ * 脅威は大技に寄せてあり (bigMul 6.0)、答えなければ HP もダウンも持っていかれる。
+ * ボスが怖いのは殴られ続けるからではなく、予告に毎回答えを出し続けるからにする。
+ */
 export function makeBoss(sectorId: number, rng: Rng): EnemyDef {
   const spec = BOSSES[Math.min(sectorId, BOSSES.length) - 1] ?? BOSSES[BOSSES.length - 1];
   const resist: Element = rng.chance(0.5) ? 'physical' : 'magic';
@@ -73,7 +81,7 @@ export function makeBoss(sectorId: number, rng: Rng): EnemyDef {
     defense: spec.defense,
     resist,
     bigEvery: 3,
-    bigMul: 2.5,
+    bigMul: 6.0,
     guardBreak: spec.guardBreak,
     groupSize: 1,
     isBoss: true,

@@ -221,6 +221,8 @@ export interface SectorReport {
   avgDowns: number;
   zeroSwapRate: number;
   annihilatedRate: number;
+  /** ボスまで辿り着けた出撃の割合。雑魚で倒れると挑めない */
+  bossReachRate: number;
   /** ボスに挑めた出撃のうち、勝った割合 */
   bossWinRate: number;
   /** ボス戦のターン数。挑めた出撃だけで平均する */
@@ -265,6 +267,7 @@ export function measure(label: string, sectorId: number, startDepth: number, sor
     avgDowns: downs / sorties,
     zeroSwapRate: zeroSwap / sorties,
     annihilatedRate: annihilated / sorties,
+    bossReachRate: bossTries / sorties,
     bossWinRate: bossTries === 0 ? 0 : bossWins / bossTries,
     avgBossTurns: bossTries === 0 ? 0 : bossTurns / bossTries,
   };
