@@ -411,6 +411,15 @@ export function measure(
 // 閾値を設けると閾値の設定次第で数字が動いてしまい、奈落係数の目安として読めなくなるため
 
 const ABYSS_SECTOR_ID = 4;
+
+/**
+ * 奈落のボスを倒して「潜り続ける」ときのダウン復帰。run.ts の reviveDowned に当たる処理を
+ * sim の party 表現 (RunState を持たない) で行う。resetSortieProgress は呼ばない
+ * (コストの累積は戻さないのが奈落の壁そのものであるため)
+ */
+function revivePartyForAbyss(party: Party): void {
+  refillFront(party);
+}
 /** 安全弁。abyssMul は深度とともに伸び続けるのでいずれ全滅する想定だが、念のため上限を切る */
 const ABYSS_SEGMENT_CAP = 200;
 
@@ -430,9 +439,13 @@ export function playAbyssSortie(rng: Rng, assumedLevel: number, assumedOwnedCoun
   let depth = sector.from;
 
   for (let segment = 0; segment < ABYSS_SEGMENT_CAP; segment++) {
-    // 深度 +2 ごとに 1 戦、10 階ぶんを 5 連戦で近似する (playSortie と同じ考え方)
+    // その区間のボス深度を先に決め、雑魚 5 連戦をそこまでの間に等間隔で置く。
+    // 「+2 ずつ 5 歩」で近似すると刻みがボス深度とずれ、最初のボス (40 階) を跨いで
+    // いきなり 50 階のボスと戦う形になってしまう (計測が実際の進行と食い違う)
+    const segmentStart = depth;
+    const bossDepth = bossDepthAt(sector, segmentStart + 1);
     for (let step = 0; step < 5; step++) {
-      depth += 2;
+      depth = segmentStart + Math.round(((step + 1) * (bossDepth - segmentStart)) / 6);
       if (rng.chance(RECRUIT_CHANCE_PER_STEP)) addRecruit(party, rng, assumedLevel, initialTotals);
       if (rng.chance(SPRING_CHANCE_PER_STEP)) {
         hp = Math.min(maxHp, hp + Math.round(maxHp * 0.5));
@@ -466,8 +479,6 @@ export function playAbyssSortie(rng: Rng, assumedLevel: number, assumedOwnedCoun
       maxHp = partyMaxHp(party);
     }
 
-    // 実際のボス深度は bossDepthAt (10 の倍数) で決める。近似の foe 連戦とは独立に求める
-    const bossDepth = bossDepthAt(sector, depth);
     const boss = startBattle(party, hp, maxHp, makeBoss(ABYSS_SECTOR_ID, rng, bossDepth), rng);
     let bossTurns = 0;
     while (boss.outcome === 'ongoing' && bossTurns < BOSS_TURN_CAP) {
@@ -476,9 +487,11 @@ export function playAbyssSortie(rng: Rng, assumedLevel: number, assumedOwnedCoun
     }
     if (boss.outcome !== 'victory') return bossDepth;
 
-    // 「潜り続ける」固定。回復も補給もしない (docs/plan.md「奈落」)
-    hp = boss.hp;
-    refillFront(party);
+    // 「潜り続ける」固定。HP は全回復しダウンも戻るが、魔法・必殺の出撃通しコストは
+    // 戻さない (run.ts continueAbyss と同じ扱い。docs/plan.md「奈落」)
+    revivePartyForAbyss(party);
+    maxHp = partyMaxHp(party);
+    hp = maxHp;
     depth = bossDepth;
   }
   return depth;
@@ -490,6 +503,8 @@ export interface AbyssReport {
   avgDepth: number;
   /** 300 回のうち最も深く潜れた到達深度 */
   maxDepth: number;
+  /** 10 の倍数の深度 (=ボスのいる深度) ごとの到達率。奈落はボスが関門になるのでここを見る */
+  reach: { depth: number; rate: number }[];
 }
 
 /**
@@ -498,12 +513,13 @@ export interface AbyssReport {
  */
 export function measureAbyss(sorties: number, seed: number, assumedLevel: number, assumedOwnedCount: number): AbyssReport {
   const rng = new Rng(seed);
-  let total = 0;
-  let max = 0;
-  for (let i = 0; i < sorties; i++) {
-    const depth = playAbyssSortie(rng, assumedLevel, assumedOwnedCount);
-    total += depth;
-    if (depth > max) max = depth;
-  }
-  return { sorties, avgDepth: total / sorties, maxDepth: max };
+  const depths: number[] = [];
+  for (let i = 0; i < sorties; i++) depths.push(playAbyssSortie(rng, assumedLevel, assumedOwnedCount));
+  const total = depths.reduce((a, b) => a + b, 0);
+  const max = depths.reduce((a, b) => (b > a ? b : a), 0);
+  const reach = [40, 50, 60, 70].map((depth) => ({
+    depth,
+    rate: depths.filter((d) => d >= depth).length / sorties,
+  }));
+  return { sorties, avgDepth: total / sorties, maxDepth: max, reach };
 }

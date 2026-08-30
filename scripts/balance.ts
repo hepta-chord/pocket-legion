@@ -16,12 +16,21 @@ const rows = [
 
 console.log(formatReports(rows));
 
-// 奈落 (docs/batch-abyss.md 7 節): 想定レベル 30・想定所持人数 20 で 300 回、
-// 全滅するまで潜り続けて平均到達深度と最深到達深度だけを測る。
-// 生還率・ボス勝率は測らない (全滅するまで潜り続けるのが前提のため)
-const abyss = measureAbyss(300, 44, 30, 20);
+// 奈落 (docs/plan.md「奈落」): 全滅するまで潜り続けて到達深度だけを測る。
+// 生還率・ボス勝率は測らない (全滅するまで潜り続けるのが前提のため)。
+// 部隊の育ち具合を 3 段階に振るのは、奈落が「育てるほど 1 つ先の関門が開く」形に
+// なっているかを見るため。1 段階だけでは壁が動いているのか止まっているのか読めない
 console.log('');
-console.log(`奈落 (300 回、想定 Lv30・所持 20): 平均到達深度 ${abyss.avgDepth.toFixed(1)} 階 / 最深到達深度 ${abyss.maxDepth} 階`);
+console.log('奈落 (各 200 回、全滅するまで潜り続ける):');
+for (const [level, owned] of [
+  [30, 20],
+  [40, 28],
+  [45, 32],
+] as const) {
+  const r = measureAbyss(200, 44, level, owned);
+  const reach = r.reach.map((x) => `${x.depth}階 ${Math.round(x.rate * 100)}%`).join(' / ');
+  console.log(`  想定 Lv${level}・所持 ${owned}: 平均 ${r.avgDepth.toFixed(1)} 階 / 最深 ${r.maxDepth} 階 | ${reach}`);
+}
 
 console.log(
   [

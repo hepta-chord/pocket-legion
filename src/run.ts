@@ -97,12 +97,19 @@ export function advance(run: RunState, rng: Rng): void {
 
 /**
  * 奈落のボスを倒した後「潜り続ける」を選んだときの遷移。
- * 回復も補給もせず、フラグを戻して次の「進む」で深度を進められるようにするだけ
- * (docs/plan.md「奈落」)
+ * フラグを戻して次の「進む」で深度を進められるようにし、
+ * **HP を全回復してダウンした味方も戻す**。ただし魔法・必殺の出撃通しコストは戻さない。
+ *
+ * 完全に無補給にすると、ボスを倒した直後の消耗そのままで次の 10 階に入ることになり、
+ * 50 階のボスを 97% 倒せる部隊が 60 階には 0% しか届かない崖になっていた (計測で確認)。
+ * 壁の正体を「強い札が撃てなくなること」に一本化すると、
+ * 深さが伸びるほど手数だけで戦う形になり、記録が滑らかに伸びる (docs/plan.md「奈落」)
  */
-export function continueAbyss(run: RunState): void {
+export function continueAbyss(run: RunState): number {
   run.atBoss = false;
   run.abyssChoice = false;
+  run.hp = run.maxHp;
+  return reviveDowned(run);
 }
 
 export function damage(run: RunState, amount: number): void {

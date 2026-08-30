@@ -882,8 +882,14 @@ export function step(state: GameState, action: Action): void {
     case 'abyss-continue': {
       const run = state.run;
       if (!run || !run.abyssChoice || state.battle) break;
-      continueAbyss(run);
-      addLog(state, 'info', 'さらに奈落へ潜り続けた。');
+      const revived = continueAbyss(run);
+      addLog(
+        state,
+        'info',
+        revived > 0
+          ? `傷を癒やし、さらに奈落へ潜り続けた。${revived} 人が戦線に復帰した。`
+          : '傷を癒やし、さらに奈落へ潜り続けた。',
+      );
       break;
     }
 

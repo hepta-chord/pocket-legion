@@ -34,13 +34,30 @@ function bossStunRange(sectorId: number): { min: number; max: number } {
 const NO_STUN_RANGE = { min: 1, max: 1 };
 
 /**
- * 奈落係数。深度 30 を超えたぶんだけ敵の HP・攻撃力と報酬の金に掛かる。
+ * 奈落係数。最初のボス (深度 40) を超えたぶんだけ敵の HP・攻撃力と報酬の金に掛かる。
  * 基礎式 (深度の一次) の上にこの一次の係数が乗るので実質二次で伸び、
- * 主人公以外の成長が頭打ちになった部隊はどこかで必ず壁に当たる
+ * 主人公以外の成長が頭打ちになった部隊はどこかで必ず壁に当たる。
+ *
+ * 起点を 30 ではなく 40 に置いてあるのは、31〜40 階を「深層の続き」の素直な伸びに保つため。
+ * 30 から掛け始めると、深層をクリアしたばかりの部隊が最初のボス (40 階) に
+ * 1 割しか届かず、奈落の最初の山を見ないまま終わってしまう (計測で確認)
  * (docs/plan.md「奈落」)
  */
 export function abyssMul(depth: number): number {
-  return depth <= 30 ? 1 : 1 + 0.04 * (depth - 30);
+  return depth <= 40 ? 1 : 1 + 0.04 * (depth - 40);
+}
+
+/**
+ * 攻撃力に掛ける奈落係数。HP 側 (abyssMul) の半分にしてある。
+ *
+ * パーティ HP はレベル上限のせいでどこかで頭打ちになるのに、
+ * 敵の攻撃力は基礎式 (深度の一次) だけでも伸び続ける。そこへ HP と同じ係数を掛けると、
+ * 55 階あたりで雑魚の一撃がパーティ HP を丸ごと持っていくようになり、
+ * 50 階のボスを 97% 倒せる部隊が 60 階には 1% しか届かない「崖」になっていた (計測で確認)。
+ * 壁は事故ではなく消耗であってほしいので、深さの重みは HP (戦闘が長引く) 側に寄せる
+ */
+export function abyssAttackMul(depth: number): number {
+  return depth <= 40 ? 1 : 1 + 0.02 * (depth - 40);
 }
 
 /**
@@ -54,8 +71,10 @@ export function abyssMul(depth: number): number {
  */
 export function makeFoe(depth: number, rng: Rng, elite = false): EnemyDef {
   const groupSize = rng.int(1, Math.min(3, 1 + Math.floor(depth / 5)));
-  // elite 倍率と奈落係数は別掛け (奈落の強敵は両方が乗って重くなる)
+  // elite 倍率と奈落係数は別掛け (奈落の強敵は両方が乗って重くなる)。
+  // 攻撃力だけは緩い係数 (abyssAttackMul) を使う
   const mul = (elite ? 1.5 : 1) * abyssMul(depth);
+  const atkMul = (elite ? 1.5 : 1) * abyssAttackMul(depth);
   // 耐性なしが主で、持ちが出たら苦戦する回にする。
   // 主力が物理の世界なので、物理耐性のほうがきつい壁として多めに出る
   const resistRoll = rng.next();
@@ -76,7 +95,7 @@ export function makeFoe(depth: number, rng: Rng, elite = false): EnemyDef {
     // 二次で伸ばすと、こちらの火力 (レベルで約 2 倍、陣営倍率で最大 2 倍) が
     // まったく追いつかず、中層から先が越えられない壁になる
     maxHp: Math.round((150 + depth * 80) * mul),
-    attack: Math.round((40 + depth * 9) * groupSize * mul),
+    attack: Math.round((40 + depth * 9) * groupSize * atkMul),
     defense: depth * 2,
     resist,
     groupSize,
@@ -232,13 +251,14 @@ export function makeBoss(sectorId: number, rng: Rng, depth: number): EnemyDef {
   const spec = BOSSES[specIndex] ?? BOSSES[BOSSES.length - 1];
   const resist: Element = rng.chance(0.5) ? 'physical' : 'magic';
   const mul = abyssMul(depth);
+  const atkMul = abyssAttackMul(depth);
   // 行動パターンの個性 (downEvery/stunEvery/stunRange) を決める区画は、奈落なら深層 (3) 固定にする
   const tierId = sectorId === 4 ? 3 : sectorId;
   return {
     id: sectorId === 4 ? `boss-abyss-${depth}` : `boss-${sectorId}`,
     name: spec.name,
     maxHp: Math.round(spec.maxHp * mul),
-    attack: Math.round(spec.attack * mul),
+    attack: Math.round(spec.attack * atkMul),
     defense: spec.defense,
     resist,
     groupSize: 1,
