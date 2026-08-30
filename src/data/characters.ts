@@ -38,8 +38,8 @@ const zeroAttack = (id: string, name = '斬撃', shortName = '斬撃'): ActionSk
  */
 const heroFinish: ActionSkillDef = {
   id: 'hero-finish',
-  name: '必殺・印籠',
-  shortName: '印籠',
+  name: 'インロー',
+  shortName: 'インロー',
   category: 'ultimate',
   baseCost: 3,
   effect: { kind: 'attack', target: 'one', power: 3.0 },

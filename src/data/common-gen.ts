@@ -273,7 +273,8 @@ const ward2: ActionSkillDef = {
   effect: { kind: 'ward', stacks: 2 },
 };
 
-// 必殺の倍率は印籠 (3.0) を頂点に、その下に並べる (docs/plan.md「スキル配分の指針」)
+// 必殺の倍率はインロー (3.0) を 3 コスト帯までの頂点に、その下に並べる。
+// 大剣だけは 4 コストの重さの対価として上に出る (docs/plan.md「スキル配分の指針」)
 const lastStand: ActionSkillDef = {
   id: 'last-stand',
   name: '捨て身',
@@ -289,13 +290,13 @@ const greatBlade: ActionSkillDef = {
   name: '大剣',
   shortName: '大剣',
   category: 'ultimate',
-  baseCost: 3,
-  effect: { kind: 'attack', target: 'one', power: 2.9 },
+  baseCost: 4,
+  effect: { kind: 'attack', target: 'one', power: 3.5 },
 };
 
 /**
  * 乱れ撃ち。必殺の多段バリエーション (docs/plan.md「多段攻撃」)。3 コストで 0.7 倍 × 4 回
- * (合計 2.8。単発の印籠 (3.0 倍) を超えないよう抑えてある)
+ * (合計 2.8。単発のインロー (3.0 倍) を超えないよう抑えてある)
  */
 const rampage: ActionSkillDef = {
   id: 'rampage',

@@ -39,7 +39,7 @@ const SKILL_PRICE: Record<string, number> = {
   cheer2: 40,
   ward2: 40,
   'last-stand': 65,
-  'great-blade': 66,
+  'great-blade': 75,
   rampage: 80,
   aurora: 85,
 };
