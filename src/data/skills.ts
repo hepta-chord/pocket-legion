@@ -13,21 +13,31 @@ export type SkillCategory = 'physical' | 'magic' | 'ultimate';
 export type Element = 'physical' | 'magic';
 
 export type SkillEffect =
-  | { kind: 'attack'; target: 'one' | 'all'; power: number }
+  /**
+   * hits は同じ威力のヒットを何回刻むか (省略 = 1)。power は 1 ヒットあたりの倍率で、
+   * 例えば 0.5 倍 × 2 回なら power: 0.5, hits: 2 と書く (合計は 1 発ものと同水準に揃える)。
+   * 各ヒットは個別にダメージ計算され、その時点のコンボが乗ったうえでコンボを 1 ずつ進める
+   * (docs/plan.md「多段攻撃」)
+   */
+  | { kind: 'attack'; target: 'one' | 'all'; power: number; hits?: number }
   /** power は最大 HP に対する割合 */
   | { kind: 'heal'; power: number }
   /** 鼓舞。攻撃 +20%/枚。stacks は 1 度に積む枚数 (コモンは 1、レアの上位は 2) */
   | { kind: 'cheer'; stacks: number }
   /** ward。被ダメージ -20%/枚。stacks は 1 度に積む枚数 (コモンは 1、レアの上位は 2) */
   | { kind: 'ward'; stacks: number }
-  /** 次に来る敵の攻撃を 1 回無効化する。ダウンも防ぐ */
+  /** 次に来る敵の攻撃系の行動 (attack/big/downstrike) の先頭ヒットだけを無効化する。
+   * 行動を丸ごと無効化はしない (docs/plan.md「ダウン攻撃への対抗」) */
   | { kind: 'barrier' }
   /**
-   * バフ剥がし。相手の鼓舞・防御 (ward) のスタックを 1 回で全部 0 にする。
+   * バフ剥がし。相手の鼓舞・防御 (ward) のスタックを剥がす。
    * 味方が使えば敵の、敵が使えば味方の鼓舞・ward を剥がす「効く相手が使い手の逆側になる」
-   * 手段なので、対象は battle.ts 側 (useSkill / applyNormalAction) が呼び出し元で振り分ける
+   * 手段なので、対象は battle.ts 側 (useSkill / applyNormalAction) が呼び出し元で振り分ける。
+   * 3 段階を持たせる (docs/plan.md「バフ剥がし」):
+   * - scope: 'one' はランダムに 1 スタックだけ (乱し・崩し)。'all' は全部 (浄化)
+   * - power があれば、剥がす前にその倍率の物理攻撃を 1 発入れる (崩し。コンボにも乗る)
    */
-  | { kind: 'dispel' }
+  | { kind: 'dispel'; scope: 'one' | 'all'; power?: number }
   /**
    * 発動すると自分がその場でスタンする。今回これを持つ味方スキルは無いが、
    * 将来「自分や味方をスタンさせる代償」を持つスキルを作れるよう型だけ用意しておく
@@ -49,7 +59,7 @@ export interface ActionSkillDef {
   category: SkillCategory;
   baseCost: number;
   effect: SkillEffect;
-  /** 攻撃の属性。省略すると物理スキルは物理、それ以外は魔法になる */
+  /** 攻撃の属性。省略すると category 'magic' だけが魔法、それ以外 (physical/ultimate) は物理になる */
   element?: Element;
   /** 出撃中 1 回しか使えない */
   oncePerSortie?: boolean;
@@ -57,8 +67,14 @@ export interface ActionSkillDef {
   selfDown?: boolean;
 }
 
+/**
+ * 属性が魔法になるのは category 'magic' だけ。必殺 (ultimate) は物理に落とす
+ * (docs/plan.md「スキル配分の指針」)。必殺は技の冴えであって魔法ではない、という整理で、
+ * 魔法属性のままだと魔法耐性の敵に主人公の切り札まで半減してしまうため。
+ * element での個別上書きは残す
+ */
 export function elementOf(def: ActionSkillDef): Element {
-  return def.element ?? (def.category === 'physical' ? 'physical' : 'magic');
+  return def.element ?? (def.category === 'magic' ? 'magic' : 'physical');
 }
 
 /**
@@ -77,5 +93,7 @@ export interface PassiveDef {
     telegraph?: number;
     /** ボスの大技のダウンを、前衛にいる限り自動で肩代わりする (先頭の 1 人だけ) */
     cover?: boolean;
+    /** 戦闘勝利時の獲得金への倍率加算 (商才)。前衛の合計を 1 に足して掛ける (端数は round) */
+    goldRate?: number;
   };
 }
