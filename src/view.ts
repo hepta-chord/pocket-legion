@@ -41,8 +41,13 @@ export interface CharacterCardView {
  */
 export type FormationCharacterView = CharacterCardView & {
   rarity: 'common' | 'rare';
+  /** 現在レベルでの実効値。growth/curve (マスクパラメータ) はここに出さない */
   attack: number;
   vitality: number;
+  /** 現在レベル。「Lv 1/20」のように maxLevel と並べて出す */
+  level: number;
+  /** レベル上限。主人公は 999 (実質無制限) */
+  maxLevel: number;
   skillDetails: SkillDetailView[];
   passiveDetails: PassiveDetailView[];
 };
@@ -85,18 +90,25 @@ export interface TownView {
   sectors: { id: number; name: string; depth: number; unlocked: boolean }[];
   /** 酒場の品揃え (コモン 3 人まで)。affordable は所持金で雇えるか */
   tavern: (FormationCharacterView & { price: number; affordable: boolean })[];
+  /** 品揃えの引き直しに要る今の賃料。引き直すたびに上がり、出撃を終えると初期値に戻る */
+  rerollCost: number;
+  /** 所持金で引き直せるか */
+  rerollAffordable: boolean;
   /** 所持キャラの一覧 */
   roster: FormationCharacterView[];
   formation: FormationEditorView;
 }
 
 /**
- * ダンジョン画面のイベント。alt があれば二択になる (ボス前の分岐イベント)。
+ * ダンジョン画面のイベント。alt があれば二択になる (ボス前の分岐イベント、または宝箱の
+ * 「見送る」・泉の「経験値をもらう」が抽選で出たとき)。
  * kind はアイコン選び専用の分類で、render/ 側 (main.ts が呼ぶ) がここから絵を選ぶ。
- * boss-alt は「回復する」の絵 (回復) にする。ボスの広間だけ EventDef を経ないので 'boss' を持つ
+ * boss-alt は「回復する」の絵 (回復) にする。ボスの広間だけ EventDef を経ないので 'boss' を持つ。
+ * 'trap' はここには出てこない (宝箱・「何も無い」を解決するまで見せない隠れた結果なので、
+ * 解決前に見えるこの kind には現れない)
  */
 interface DungeonEventView {
-  kind: 'battle' | 'elite' | 'treasure' | 'spring' | 'trap' | 'recruit' | 'boss-alt' | 'boss';
+  kind: 'battle' | 'elite' | 'treasure' | 'spring' | 'nothing' | 'recruit' | 'boss-alt' | 'boss';
   title: string;
   body: string;
   action: string;
@@ -174,6 +186,8 @@ export interface BattleView {
     bigLabel: string;
     /** ダウン攻撃の予告バッジに出す書き下しラベル (例: 「ダウン攻撃 あと2」)。持たない敵は null */
     downLabel: string | null;
+    /** スタンの予告バッジに出す書き下しラベル (例: 「スタン あと2」)。持たない敵は null */
+    stunLabel: string | null;
     alive: boolean;
     isBoss: boolean;
   };

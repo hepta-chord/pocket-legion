@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { CHARACTERS } from './data/characters';
 import { generateCommon } from './data/common-gen';
 import { BOSS_ALT_EVENT, EVENTS } from './data/events';
+import { priceOf } from './data/pricing';
 import { newGame, step, toViewModel, type Action, type GameState } from './game';
 import { Rng } from './rng';
 
@@ -311,7 +312,7 @@ describe('酒場', () => {
     step(state, { type: 'hire', id: entry.id });
     const owned = state.owned.find((o) => o.id === entry.id);
     expect(owned).toBeDefined();
-    expect(state.gold).toBe(goldBefore - entry.price);
+    expect(state.gold).toBe(goldBefore - priceOf(entry));
     expect(state.tavern.some((t) => t.id === entry.id)).toBe(false);
     // 生成コモンでも、雇った後は酒場に並んでいたときと同じスキル構成のまま残る
     expect(owned?.skills.map((s) => s.name)).toEqual(entry.skills.map((s) => s.name));
@@ -374,6 +375,53 @@ describe('酒場', () => {
   });
 });
 
+describe('酒場: 雇用上限', () => {
+  it('陣営が雇用上限に達すると、以後は酒場に並ばなくなる (統計テスト)', () => {
+    const state = fresh();
+    // 辺境の上限は 3 (hero は上限に数えない)。上限ぴったりまで積む
+    const rng = new Rng(1);
+    state.owned.push(...[1, 2, 3].map((i) => generateCommon('frontier', rng, 100 + i)));
+    for (let i = 0; i < 100; i++) {
+      step(state, { type: 'sortie', sectorId: 1 });
+      step(state, { type: 'retreat' });
+      expect(state.tavern.some((c) => c.faction === 'frontier')).toBe(false);
+    }
+  });
+});
+
+describe('酒場の引き直し', () => {
+  it('引き直すと金が減り、賃料が上がる', () => {
+    const state = fresh();
+    state.gold = 100000;
+    const costBefore = state.tavernRerollCost;
+    step(state, { type: 'reroll-tavern' });
+    expect(state.gold).toBe(100000 - costBefore);
+    expect(state.tavernRerollCost).toBeGreaterThan(costBefore);
+  });
+
+  it('金が足りなければ引き直せない', () => {
+    const state = fresh();
+    state.gold = 0;
+    const before = [...state.tavern];
+    const costBefore = state.tavernRerollCost;
+    step(state, { type: 'reroll-tavern' });
+    expect(state.gold).toBe(0);
+    expect(state.tavernRerollCost).toBe(costBefore);
+    expect(state.tavern).toEqual(before);
+  });
+
+  it('出撃を終えると賃料が初期値に戻る', () => {
+    const state = fresh();
+    state.gold = 100000;
+    const initial = state.tavernRerollCost;
+    step(state, { type: 'reroll-tavern' });
+    expect(state.tavernRerollCost).toBeGreaterThan(initial);
+    step(state, { type: 'sortie', sectorId: 1 });
+    step(state, { type: 'retreat' });
+    expect(state.tavernRerollCost).toBe(initial);
+  });
+});
+
 describe('出撃時のパーティ編成', () => {
   it('owned 全員でパーティを組む (owned が 2 人なら 2 人で潜る)', () => {
     const state = fresh();
@@ -407,8 +455,8 @@ describe('セーブ・ロードを跨いだ生成コモンの同一性', () => {
     expect(owned).toBeDefined();
     expect(owned?.name).toBe(entry.name);
     expect(owned?.faction).toBe(entry.faction);
-    expect(owned?.attack).toBe(entry.attack);
-    expect(owned?.vitality).toBe(entry.vitality);
+    expect(owned?.baseAttack).toBe(entry.baseAttack);
+    expect(owned?.baseVitality).toBe(entry.baseVitality);
     expect(owned?.skills.map((s) => s.name)).toEqual(entry.skills.map((s) => s.name));
     expect(owned?.passives.map((p) => p.name)).toEqual(entry.passives.map((p) => p.name));
   });
@@ -542,6 +590,60 @@ describe('泉イベント', () => {
     expect(downedFighter.downed).toBe(false);
     expect(downedFighter.skills[0].sortieBump).toBe(0);
     expect(run.party.front.some((f) => f === downedFighter)).toBe(true);
+  });
+});
+
+describe('宝箱・「何も無い」に隠れた罠', () => {
+  it('宝箱を開けると金が入るか、まれに中身が罠になる (統計テスト)', () => {
+    const state = fresh();
+    step(state, { type: 'sortie', sectorId: 1 });
+    const run = state.run!;
+    let trapCount = 0;
+    let goldCount = 0;
+    for (let i = 0; i < 300; i++) {
+      run.hp = run.maxHp; // 罠で全滅させないため、毎回全回復させておく
+      run.gold = 0;
+      run.pending = EVENTS.find((e) => e.kind === 'treasure')!;
+      step(state, { type: 'resolve' });
+      if (run.gold > 0) goldCount += 1;
+      else trapCount += 1;
+    }
+    expect(goldCount).toBeGreaterThan(0);
+    expect(trapCount).toBeGreaterThan(0);
+    // 初期値は 30%。統計テストなので幅を持たせる
+    const rate = trapCount / 300;
+    expect(rate).toBeGreaterThan(0.15);
+    expect(rate).toBeLessThan(0.45);
+  });
+
+  it('宝箱を「見送る」と金も罠も無い', () => {
+    const state = fresh();
+    step(state, { type: 'sortie', sectorId: 1 });
+    const run = state.run!;
+    const hpBefore = run.hp;
+    const goldBefore = run.gold;
+    run.pending = { ...EVENTS.find((e) => e.kind === 'treasure')!, altAction: '見送る' };
+    step(state, { type: 'resolve-alt' });
+    expect(run.hp).toBe(hpBefore);
+    expect(run.gold).toBe(goldBefore);
+    expect(run.pending).toBeNull();
+  });
+
+  it('「何も無い」は何も起きないか、まれに罠が仕掛けてある (統計テスト)', () => {
+    const state = fresh();
+    step(state, { type: 'sortie', sectorId: 1 });
+    const run = state.run!;
+    let trapCount = 0;
+    for (let i = 0; i < 300; i++) {
+      run.hp = run.maxHp;
+      run.pending = EVENTS.find((e) => e.kind === 'nothing')!;
+      step(state, { type: 'resolve' });
+      if (run.hp < run.maxHp) trapCount += 1;
+    }
+    // 初期値は 25%。統計テストなので幅を持たせる
+    const rate = trapCount / 300;
+    expect(rate).toBeGreaterThan(0.1);
+    expect(rate).toBeLessThan(0.4);
   });
 });
 

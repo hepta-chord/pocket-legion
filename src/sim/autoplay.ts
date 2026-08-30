@@ -5,8 +5,13 @@
 // 酒場の代わり・ボス前の分岐・泉のリセット・recruit のデッキ加入は
 // 出撃の骨格に効くので、簡略化した形で反映する。
 //
-// まだ入っていないもの: レベル、陣営倍率、前衛の同陣営補正、治療薬以外のアイテム、
-// treasure/trap の抽選そのもの (金と HP は測定対象に含めていない)。
+// レベルは「出撃前に区画ごとの想定レベルを振って測る」形で入っている
+// (浅層 1、中層 10、深層 20 など。docs/batch-growth.md 7 節)。経験値を積んで
+// 上げていく過程そのものはここでは再現しない (計測は「その戦力なら勝てるか」を見るためで、
+// 数値の調整は計画側がまとめて行う)。
+//
+// まだ入っていないもの: 陣営倍率、前衛の同陣営補正、治療薬以外のアイテム、
+// treasure/nothing (罠が隠れている) の抽選そのもの (金と HP は測定対象に含めていない)。
 // ここの数字は骨格の健全性 (詰み方・戦術の偏り) を見るためのもので、最終調整ではない。
 
 import {
@@ -26,7 +31,7 @@ import {
   type Party,
   type SwapMove,
 } from '../battle';
-import { buildFighter, CHARACTERS, type CharacterEntry } from '../data/characters';
+import { buildFighter, CHARACTERS, withLevel, type CharacterEntry } from '../data/characters';
 import { generateCommon } from '../data/common-gen';
 import { makeBoss, makeFoe } from '../data/enemies';
 import { FACTIONS } from '../data/factions';
@@ -35,9 +40,10 @@ import { Rng } from '../rng';
 /** コモンの id (`common-N`) に振る通し番号。生成の結果には影響しない */
 let simCommonSerial = 1;
 
-/** ダンジョン内の加入イベント (recruit) の簡略版。コモンを 1 人その場で生成してデッキに足す */
-function addRecruit(party: Party, rng: Rng): void {
-  const picked = generateCommon(rng.pick(FACTIONS), rng, simCommonSerial++);
+/** ダンジョン内の加入イベント (recruit) の簡略版。コモンを 1 人その場で生成してデッキに足す。
+ * 区画の想定レベルに合わせておく (でないと後半の連戦で level 1 の丸腰が混ざってしまう) */
+function addRecruit(party: Party, rng: Rng, assumedLevel: number): void {
+  const picked = withLevel(generateCommon(rng.pick(FACTIONS), rng, simCommonSerial++), assumedLevel);
   const fighter = buildFighter(picked);
   const idx = party.front.findIndex((f) => f === null);
   if (idx >= 0) party.front[idx] = fighter;
@@ -173,11 +179,18 @@ const TURN_CAP = 25;
 /** ボスは消耗戦になるので上限を別に持つ。設計目標は 50〜100 ターン */
 const BOSS_TURN_CAP = 200;
 
-export function playSortie(sectorId: number, startDepth: number, rng: Rng): SortieResult {
+/**
+ * @param assumedLevel 出撃前に全員へ振る「想定レベル」。区画ごとに決め打ちで測る
+ * (浅層 1、中層 10、深層 20 など。docs/batch-growth.md 7 節)。CHARACTERS は共有オブジェクトなので、
+ * withLevel で独立したコピーを作ってからレベルを振る (他の測定・他のプレイへ漏れないように)
+ */
+export function playSortie(sectorId: number, startDepth: number, rng: Rng, assumedLevel: number): SortieResult {
   // 出撃開始時: hero + mate + コモン 3 人 (酒場の代わり。陣営はランダムに引く)
-  const hero = CHARACTERS.find((c) => c.id === 'hero')!;
-  const mate = CHARACTERS.find((c) => c.id === 'mate')!;
-  const startCommons = [0, 1, 2].map(() => generateCommon(rng.pick(FACTIONS), rng, simCommonSerial++));
+  const hero = withLevel(CHARACTERS.find((c) => c.id === 'hero')!, assumedLevel);
+  const mate = withLevel(CHARACTERS.find((c) => c.id === 'mate')!, assumedLevel);
+  const startCommons = [0, 1, 2].map(() =>
+    withLevel(generateCommon(rng.pick(FACTIONS), rng, simCommonSerial++), assumedLevel),
+  );
   // レアは有限 (4 人) なので、ボス前の分岐で引いた分だけ所持 id を追う
   const ownedRareIds = new Set<string>();
   const initial: CharacterEntry[] = [hero, mate, ...startCommons];
@@ -201,7 +214,7 @@ export function playSortie(sectorId: number, startDepth: number, rng: Rng): Sort
     const depth = startDepth + step * 2;
 
     // 泉のリセットと recruit のデッキ加入を、区間ごとの近似確率で反映する
-    if (rng.chance(RECRUIT_CHANCE_PER_STEP)) addRecruit(party, rng);
+    if (rng.chance(RECRUIT_CHANCE_PER_STEP)) addRecruit(party, rng, assumedLevel);
     if (rng.chance(SPRING_CHANCE_PER_STEP)) {
       hp = Math.min(maxHp, hp + Math.round(maxHp * 0.5));
       resetSortieProgress(party);
@@ -236,7 +249,7 @@ export function playSortie(sectorId: number, startDepth: number, rng: Rng): Sort
   } else {
     const rareCandidates = CHARACTERS.filter((c) => c.rarity === 'rare' && !ownedRareIds.has(c.id));
     if (rareCandidates.length > 0) {
-      const picked = rng.pick(rareCandidates);
+      const picked = withLevel(rng.pick(rareCandidates), assumedLevel);
       ownedRareIds.add(picked.id);
       const fighter = buildFighter(picked);
       const idx = party.front.findIndex((f) => f === null);
@@ -286,7 +299,15 @@ export interface SectorReport {
   avgBossTurns: number;
 }
 
-export function measure(label: string, sectorId: number, startDepth: number, sorties: number, seed: number): SectorReport {
+/** @param assumedLevel 出撃前に全員へ振る想定レベル (docs/batch-growth.md 7 節)。区画ごとに呼び出し側が決める */
+export function measure(
+  label: string,
+  sectorId: number,
+  startDepth: number,
+  sorties: number,
+  seed: number,
+  assumedLevel: number,
+): SectorReport {
   const rng = new Rng(seed);
   let wins = 0;
   let battles = 0;
@@ -299,7 +320,7 @@ export function measure(label: string, sectorId: number, startDepth: number, sor
   let bossWins = 0;
   let bossTurns = 0;
   for (let i = 0; i < sorties; i++) {
-    const r = playSortie(sectorId, startDepth, rng);
+    const r = playSortie(sectorId, startDepth, rng, assumedLevel);
     // 雑魚で倒れた出撃はボスに挑めていないので、ボスの平均から外す
     if (r.bossTurns > 0) {
       bossTries += 1;
