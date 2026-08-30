@@ -68,6 +68,11 @@ export interface FormationEditorView {
   auto: boolean;
   /** 配置候補 (所持キャラ全員)。placedSlot は今どの前衛スロットにいるか (控えなら null) */
   roster: (FormationCharacterView & { placedSlot: number | null })[];
+  /**
+   * 所持ベースの陣営倍率 (陣営 4 つぶん)。「王国 x1.32」のように出し、
+   * 何を集めると何が伸びるかを見せる (docs/plan.md「ステータスと陣営倍率」)
+   */
+  factionMultipliers: { faction: string; name: string; multiplier: number }[];
 }
 
 /**
@@ -233,5 +238,4 @@ export type ScreenView = TownView | DungeonView | BattleView | ResultView;
 export interface ViewModel {
   screen: ScreenView;
   log: LogLineView[];
-  seed: string;
 }

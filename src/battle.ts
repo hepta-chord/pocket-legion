@@ -61,6 +61,13 @@ export interface Fighter {
    * 帰還と回復イベントで 0 に戻す (ダウンと同じ扱い)
    */
   stunnedUntil: number;
+  /**
+   * 前衛の同陣営補正の倍率 (docs/plan.md「前衛の同陣営補正」)。前衛にいる間だけ 1 より大きくなる。
+   * 所持ベースの陣営倍率 (attack/vitality に焼き込み済み) とは別物で、掛け算で重ねる。
+   * 前衛の顔ぶれが変わるたび recalcVanguardBonus で書き換える (焼き込まず毎回掛けるのは、
+   * 前衛から外れたら素の値に戻す必要があるため)
+   */
+  vanguardMul: number;
 }
 
 export interface Party {
@@ -81,10 +88,46 @@ export function newParty(front: Fighter[], reserve: Fighter[] = []): Party {
   return { front: slots, reserve: [...reserve], swapCooldown: 0 };
 }
 
+/** 前衛補正 1 段 (前衛の同陣営 1 人増えるごと) の上乗せ (docs/plan.md「前衛の同陣営補正」の仮置き 5%) */
+export const VANGUARD_BONUS_PER_MEMBER = 0.05;
+
+/** 前衛の同陣営の人数から倍率を出す。1 人 (0 人も含む) は補正無し、2 人以上で (n-1)*5% */
+export function vanguardMultiplier(sameFactionCount: number): number {
+  return sameFactionCount >= 2 ? 1 + (sameFactionCount - 1) * VANGUARD_BONUS_PER_MEMBER : 1;
+}
+
+/**
+ * 前衛の顔ぶれから、同陣営補正を出し直す。前衛にいる間だけ効く仕組みなので、
+ * 控えは補正無し (1 倍) に戻す。ダウン・自動補充・手動交代・戦闘開始など、
+ * 前衛の中身が変わるすべての箇所 (downSlot/swapMembers/refillFront/startBattle) から呼ぶ
+ */
+export function recalcVanguardBonus(party: Party): void {
+  const counts = new Map<Faction, number>();
+  for (const f of party.front) {
+    if (!f) continue;
+    counts.set(f.faction, (counts.get(f.faction) ?? 0) + 1);
+  }
+  for (const f of party.front) {
+    if (!f) continue;
+    f.vanguardMul = vanguardMultiplier(counts.get(f.faction) ?? 0);
+  }
+  for (const f of party.reserve) f.vanguardMul = 1;
+}
+
+/** 陣営倍率 (Fighter.attack に焼き込み済み) と前衛補正 (vanguardMul) を掛けた実効攻撃力 */
+export function effectiveFighterAttack(f: Fighter): number {
+  return Math.round(f.attack * f.vanguardMul);
+}
+
+/** 陣営倍率と前衛補正を掛けた実効体力。パーティ最大 HP への寄与もこちらを使う */
+export function effectiveFighterVitality(f: Fighter): number {
+  return Math.round(f.vitality * f.vanguardMul);
+}
+
 export function partyMaxHp(party: Party): number {
   let sum = PARTY_BASE_HP;
-  for (const f of party.front) if (f) sum += f.vitality;
-  for (const f of party.reserve) sum += f.vitality;
+  for (const f of party.front) if (f) sum += effectiveFighterVitality(f);
+  for (const f of party.reserve) sum += effectiveFighterVitality(f);
   return sum;
 }
 
@@ -93,9 +136,10 @@ export function refillFront(party: Party): void {
   for (let i = 0; i < party.front.length; i++) {
     if (party.front[i]) continue;
     const next = party.reserve.shift();
-    if (!next) return;
+    if (!next) break;
     party.front[i] = next;
   }
+  recalcVanguardBonus(party);
 }
 
 /** 前衛のパッシブを合算する。前衛にいる間だけ効く */
@@ -307,6 +351,8 @@ function resetTurnBumps(party: Party): void {
 export function startBattle(party: Party, hp: number, maxHp: number, enemyDef: EnemyDef, rng: Rng, manaBonus = 0): BattleState {
   party.swapCooldown = 0;
   resetTurnBumps(party);
+  // 前衛の顔ぶれ (=戦闘開始時点) から同陣営補正を確定させる
+  recalcVanguardBonus(party);
   const telegraph = hookSum(party, 'telegraph');
   const enemy: EnemyState = {
     def: enemyDef,
@@ -384,7 +430,7 @@ function hitEnemy(state: BattleState, attacker: Fighter, def: ActionSkillDef, en
   // コンボはその攻撃の発動時点の値を使う。1 発目は等倍、2 発目 +15%、3 発目 +30% ...
   const comboMul = 1 + 0.15 * state.combo;
   const cheerMul = 1 + CHEER_RATE_PER_STACK * state.cheer.stacks;
-  let base = attacker.attack * def.effect.power * cheerMul * comboMul;
+  let base = effectiveFighterAttack(attacker) * def.effect.power * cheerMul * comboMul;
   // 敵は 1 体にまとめて表すが、全体攻撃は元の頭数 (groupSize) ぶん威力が伸びる。
   // でないと「群れに強い」という全体攻撃の性格が消えるため
   if (def.effect.target === 'all') base *= 1 + 0.3 * (enemy.def.groupSize - 1);
@@ -536,6 +582,8 @@ export function swapMembers(state: BattleState, moves: SwapMove[]): boolean {
       addLog(state, 'info', `${entering.name} が空いた枠に入った。`);
     }
   }
+  // 前衛の顔ぶれが変わったので同陣営補正を出し直す
+  recalcVanguardBonus(party);
   party.swapCooldown = SWAP_COOLDOWN;
   state.stats.swaps += moves.length;
   return true;
@@ -578,6 +626,9 @@ function downSlot(state: BattleState, slot: number, rng: Rng, cause: string, cov
     party.front[slot] = null;
     addLog(state, 'warn', `${f.name} が${cause}ダウン。埋める者がいない。`);
   }
+
+  // 前衛の顔ぶれが変わった (ダウン・自動補充のどちらでも) ので同陣営補正を出し直す
+  recalcVanguardBonus(party);
 
   if (party.front.every((x) => x === null)) {
     state.outcome = 'annihilated';

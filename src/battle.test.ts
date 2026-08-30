@@ -2,12 +2,15 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFENSE_MAX,
   effectiveCost,
+  effectiveFighterAttack,
+  effectiveFighterVitality,
   endTurn,
   makeSkillState,
   MANA_CAP,
   newParty,
   partyMaxHp,
   PARTY_BASE_HP,
+  recalcVanguardBonus,
   refillFront,
   resetSortieProgress,
   startBattle,
@@ -17,10 +20,12 @@ import {
   useDefense,
   usePotion,
   useSkill,
+  vanguardMultiplier,
   whyCannotUse,
   type EnemyDef,
   type Fighter,
 } from './battle';
+import { buildFighter, type CharacterEntry } from './data/characters';
 import type { Faction } from './data/factions';
 import type { ActionSkillDef, PassiveDef } from './data/skills';
 import { Rng } from './rng';
@@ -151,6 +156,7 @@ function fighter(id: string, faction: Faction = 'kingdom', skills: ActionSkillDe
     passives,
     downed: false,
     stunnedUntil: 0,
+    vanguardMul: 1,
   };
 }
 
@@ -966,5 +972,101 @@ describe('逃げる', () => {
     const hpBefore = state.hp;
     endTurn(state, rng);
     if (state.outcome === 'ongoing') expect(state.hp).toBeLessThan(hpBefore);
+  });
+});
+
+describe('前衛の同陣営補正 (vanguardMultiplier / recalcVanguardBonus)', () => {
+  it('同陣営 2 人で +5%、6 人で +25%になる。1 人 (0 人も) なら補正無し', () => {
+    expect(vanguardMultiplier(0)).toBe(1);
+    expect(vanguardMultiplier(1)).toBe(1);
+    expect(vanguardMultiplier(2)).toBeCloseTo(1.05);
+    expect(vanguardMultiplier(6)).toBeCloseTo(1.25);
+  });
+
+  it('前衛の陣営別人数から倍率を出し、控えは常に 1 に戻す', () => {
+    const a = fighter('a', 'kingdom');
+    const b = fighter('b', 'kingdom');
+    const c = fighter('c', 'order'); // 単独陣営は補正無し
+    const reserveMember = fighter('d', 'kingdom'); // 前衛にいないので同陣営でも補正は乗らない
+    const party = newParty([a, b, c], [reserveMember]);
+    recalcVanguardBonus(party);
+    expect(a.vanguardMul).toBeCloseTo(1.05);
+    expect(b.vanguardMul).toBeCloseTo(1.05);
+    expect(c.vanguardMul).toBe(1);
+    expect(reserveMember.vanguardMul).toBe(1);
+  });
+
+  it('前衛の人数が変わると (ダウンなどで前衛から抜けると) 補正も出し直される', () => {
+    const a = fighter('a', 'kingdom');
+    const b = fighter('b', 'kingdom');
+    const c = fighter('c', 'kingdom');
+    const party = newParty([a, b, c]);
+    recalcVanguardBonus(party);
+    expect(a.vanguardMul).toBeCloseTo(1.1); // 3 人 -> (3-1)*5%
+
+    party.front[0] = null; // a が前衛から抜けたと想定
+    recalcVanguardBonus(party);
+    expect(b.vanguardMul).toBeCloseTo(1.05); // 残り 2 人 -> 5%
+    expect(c.vanguardMul).toBeCloseTo(1.05);
+  });
+
+  it('startBattle は戦闘開始時に前衛の顔ぶれから補正を確定させる', () => {
+    const state = battleOf([fighter('a', 'kingdom'), fighter('b', 'kingdom')]);
+    expect(state.party.front[0]?.vanguardMul).toBeCloseTo(1.05);
+    expect(state.party.front[1]?.vanguardMul).toBeCloseTo(1.05);
+  });
+
+  it('ダウンで前衛が変わると (自動補充を挟んでも) 同陣営補正が出し直される', () => {
+    // 前衛 3 人 (同陣営、控え無し)。ダウン攻撃で 1 人抜けると埋める者がおらず前衛 2 人になる
+    const foe = boss({ attack: 1, bigEvery: 99, downEvery: 1 });
+    const state = battleOf([fighter('a', 'kingdom'), fighter('b', 'kingdom'), fighter('c', 'kingdom')], [], foe);
+    expect(state.party.front[0]?.vanguardMul).toBeCloseTo(1.1); // 3 人ぶんの補正
+
+    endTurn(state, new Rng(1)); // ダウン攻撃 (downEvery:1) が発動し、誰か 1 人が抜ける
+    const survivors = state.party.front.filter((f): f is Fighter => f !== null);
+    expect(survivors).toHaveLength(2);
+    for (const f of survivors) expect(f.vanguardMul).toBeCloseTo(1.05); // 2 人ぶんに下がる
+  });
+
+  it('手動交代でも前衛が変わると補正が出し直される', () => {
+    const a = fighter('a', 'kingdom');
+    const b = fighter('b', 'kingdom');
+    const c = fighter('c', 'kingdom'); // 控え
+    const state = battleOf([a, b], [c], enemy({ attack: 0 }));
+    expect(a.vanguardMul).toBeCloseTo(1.05);
+
+    swapMembers(state, [{ slot: 1, reserveId: 'c' }]); // b を下げて c を前に出す (同陣営のまま)
+    expect(state.party.front.filter((f): f is Fighter => f !== null)).toHaveLength(2);
+    expect(a.vanguardMul).toBeCloseTo(1.05); // 人数は変わらないので値そのものは変化しない
+    expect(state.party.front[1]?.vanguardMul).toBeCloseTo(1.05);
+  });
+
+  it('陣営倍率 (所持ベース) と前衛補正は掛け算で重なる', () => {
+    const entry: CharacterEntry = {
+      id: 'x',
+      name: 'x',
+      faction: 'kingdom',
+      rarity: 'common',
+      baseAttack: 100,
+      baseVitality: 50,
+      skills: [],
+      passives: [],
+      level: 1,
+      exp: 0,
+      maxLevel: 20,
+      growth: 0,
+      curve: 'linear',
+    };
+    // 所持ベースの陣営倍率 (roster.ts 側で決まる想定の値) を 1.2 として Fighter に焼き込む
+    const solo = buildFighter(entry, 1.2);
+    const ally = buildFighter({ ...entry, id: 'ally' }, 1.2);
+    expect(solo.attack).toBe(Math.round(100 * 1.2));
+
+    const party = newParty([solo, ally]);
+    recalcVanguardBonus(party); // 同陣営 2 人 -> 前衛補正 +5%
+    expect(solo.vanguardMul).toBeCloseTo(1.05);
+    // 実効値は「陣営倍率込みの attack」に前衛補正をさらに掛けた値になる (足し算ではない)
+    expect(effectiveFighterAttack(solo)).toBe(Math.round(Math.round(100 * 1.2) * 1.05));
+    expect(effectiveFighterVitality(solo)).toBe(Math.round(Math.round(50 * 1.2) * 1.05));
   });
 });
