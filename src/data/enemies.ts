@@ -45,9 +45,9 @@ interface BossSpec {
 
 /** 区画ごとのボス。名前と強さは深度帯に合わせて 3 段階で決め打ちする */
 const BOSSES: readonly BossSpec[] = [
-  { name: '穴蜘蛛の女王', maxHp: 20000, attack: 40, defense: 40, guardBreak: 3 },
-  { name: '骨の王', maxHp: 40000, attack: 70, defense: 70, guardBreak: 4 },
-  { name: '深淵の使者', maxHp: 65000, attack: 100, defense: 100, guardBreak: 4 },
+  { name: '穴蜘蛛の女王', maxHp: 2200, attack: 40, defense: 40, guardBreak: 3 },
+  { name: '骨の王', maxHp: 5000, attack: 70, defense: 70, guardBreak: 4 },
+  { name: '深淵の使者', maxHp: 9000, attack: 100, defense: 100, guardBreak: 4 },
 ];
 
 /**
