@@ -1161,3 +1161,13 @@ try {
   addLog(state, 'info', '前のセーブは読めなかった。新しく始める。');
   render();
 }
+
+// --- オフライン対応 (本番ビルドのみ) ---
+// dev サーバでは sw.js を配らないので、開発中に登録すると無関係なエラーだけが増える
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch(() => {
+      /* 登録できなくてもオンラインでは遊べる */
+    });
+  });
+}
