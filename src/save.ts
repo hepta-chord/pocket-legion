@@ -34,3 +34,11 @@ export function loadGame(): LoadResult {
     return { state: null, discarded: true };
   }
 }
+
+export function clearSave(): void {
+  try {
+    localStorage.removeItem(KEY);
+  } catch {
+    /* 消せなくても続ける */
+  }
+}

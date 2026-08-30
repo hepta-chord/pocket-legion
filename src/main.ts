@@ -8,7 +8,7 @@ import type { Renderer } from './render/renderer';
 import { TextRenderer } from './render/text-renderer';
 import { TOWN_ART } from './render/town-art';
 import { randomSeedString } from './rng';
-import { loadGame, saveGame } from './save';
+import { clearSave, loadGame, saveGame } from './save';
 import type { BattleView, DungeonView, FormationCharacterView, TownView, ViewModel } from './view';
 
 function byId<T extends HTMLElement>(id: string): T {
@@ -1003,4 +1003,19 @@ function render(): void {
 }
 
 window.addEventListener('resize', render);
-render();
+
+// 最初の描画だけは失敗を拾ってセーブを捨てる。
+//
+// SAVE_VERSION の上げ忘れで、形の合わないセーブが読み込まれると
+// 描画の途中で落ちて操作不能になる (実際に戦闘中のセーブで起きた)。
+// 版の管理は人間が守る約束でしかないので、破れたときに
+// 遊べない状態で固まらないための最後の受け皿を置いておく。
+try {
+  render();
+} catch (e) {
+  console.error('セーブの読み込みに失敗した', e);
+  clearSave();
+  state = newGame(randomSeedString());
+  addLog(state, 'info', '前のセーブは読めなかった。新しく始める。');
+  render();
+}

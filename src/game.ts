@@ -69,7 +69,7 @@ import type {
 
 // 戦闘ルール v2 (防御の改称・鼓舞ガードのスタック制・マナの奇偶・スタン・逃げる) で
 // GameState / BattleState の形が変わったので、古いセーブと噛み合わなくなる。区切りを上げて捨てる
-export const SAVE_VERSION = 7;
+export const SAVE_VERSION = 8;
 
 /** 回復薬の所持上限 */
 const POTION_MAX = 3;
