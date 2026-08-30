@@ -467,7 +467,7 @@ export function step(state: GameState, action: Action): void {
         case 'battle':
         case 'elite': {
           run.pending = null;
-          const foe = makeFoe(run.depth, rng, kind === 'elite', run.sectorId);
+          const foe = makeFoe(run.depth, rng, kind === 'elite');
           enterBattle(state, run, kind, foe, `${foe.name} が立ちはだかる。`, rng);
           break;
         }
