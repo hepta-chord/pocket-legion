@@ -1,6 +1,6 @@
 // バランス計測の入口。npm run balance で回す。
 
-import { measure } from '../src/sim/autoplay';
+import { measure, measureAbyss } from '../src/sim/autoplay';
 import { formatReports } from '../src/sim/report';
 
 // 想定レベル (浅層 1・中層 10・深層 20) と想定所持人数 (浅層 5・中層 12・深層 20) を
@@ -15,6 +15,14 @@ const rows = [
 ];
 
 console.log(formatReports(rows));
+
+// 奈落 (docs/batch-abyss.md 7 節): 想定レベル 30・想定所持人数 20 で 300 回、
+// 全滅するまで潜り続けて平均到達深度と最深到達深度だけを測る。
+// 生還率・ボス勝率は測らない (全滅するまで潜り続けるのが前提のため)
+const abyss = measureAbyss(300, 44, 30, 20);
+console.log('');
+console.log(`奈落 (300 回、想定 Lv30・所持 20): 平均到達深度 ${abyss.avgDepth.toFixed(1)} 階 / 最深到達深度 ${abyss.maxDepth} 階`);
+
 console.log(
   [
     '',
