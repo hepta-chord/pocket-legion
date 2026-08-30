@@ -41,6 +41,27 @@ const heavyAttack = (id: string): ActionSkillDef => ({
   effect: { kind: 'attack', target: 'one', power: 1.8 },
 });
 
+// 全体攻撃は敵の群れの規模で威力が伸びる (battle.ts)。
+// 単体スキルより 1 発が軽いぶん、群れに当てたときだけ割に合う札になる。
+// 物理と魔法に 1 つずつ置いて、どちらの主力でも群れへの答えを持てるようにする
+const sweep: ActionSkillDef = {
+  id: 'sweep',
+  name: '薙ぎ払い',
+  shortName: '薙ぎ',
+  category: 'physical',
+  baseCost: 1,
+  effect: { kind: 'attack', target: 'all', power: 0.8 },
+};
+
+const storm: ActionSkillDef = {
+  id: 'storm',
+  name: '火群',
+  shortName: '火群',
+  category: 'magic',
+  baseCost: 2,
+  effect: { kind: 'attack', target: 'all', power: 1.4 },
+};
+
 // 魔法は希少なぶん、物理の連打より一撃をはっきり強くする。
 // 出撃を通したコスト上昇を払ってでも使いたい威力が無いと、札として死ぬため
 const holyBolt: ActionSkillDef = {
@@ -239,7 +260,7 @@ export const CHARACTERS: readonly CharacterEntry[] = [
     price: 120,
     attack: 100,
     vitality: 40,
-    skills: [heavyAttack('k3-heavy'), commonAttack('k3-attack')],
+    skills: [heavyAttack('k3-heavy'), sweep],
     passives: [],
   },
 
@@ -263,7 +284,7 @@ export const CHARACTERS: readonly CharacterEntry[] = [
     price: 120,
     attack: 80,
     vitality: 50,
-    skills: [holyBolt],
+    skills: [holyBolt, storm],
     passives: [scout],
   },
   {
