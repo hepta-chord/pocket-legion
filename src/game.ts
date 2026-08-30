@@ -37,7 +37,7 @@ import {
   type CharacterEntry,
 } from './data/characters';
 import { generateCommon, NAME_POOLS } from './data/common-gen';
-import { NOTHING_TRAP_CHANCE, TREASURE_TRAP_CHANCE } from './data/events';
+import { CORPSE_TRAP_CHANCE, NOTHING_TRAP_CHANCE, TREASURE_TRAP_CHANCE } from './data/events';
 import { FACTION_HIRE_CAP, FACTION_NAMES, FACTION_WEIGHT, FACTIONS, type Faction } from './data/factions';
 import { makeBoss, makeFoe } from './data/enemies';
 import { DUNGEONS } from './data/dungeons';
@@ -107,6 +107,12 @@ const POTION_PRICE_RAISE = 1.5;
 const EXP_BASE = { battle: 8, elite: 16, boss: 50 } as const;
 /** 泉の代替 (経験値をもらう) が渡す量。通常戦の数戦ぶんの上乗せにする */
 const SPRING_ALT_EXP_MUL = 3;
+/** 祠「祈る」が渡す経験値の倍率。泉の代替より軽い、単独のイベントとしての初期値 */
+const SHRINE_PRAY_EXP_MUL = 2;
+/** 休息「先を急ぐ」が渡す経験値の倍率。回復を捨てる代わりの見返りなので祠よりわずかに軽くする */
+const REST_PRESS_EXP_MUL = 1.5;
+/** 隊商の回復薬の値段。道具屋の初期値 (POTION_PRICE_BASE) より高くする (行商は割高) */
+const CARAVAN_POTION_PRICE = 150;
 
 export type Action =
   | { type: 'sortie'; sectorId: number }
@@ -489,6 +495,67 @@ function resolveSpringAlt(state: GameState, run: RunState): string {
   return `泉の力を経験値に変えた。${amount} の経験値が入った。`;
 }
 
+/** 死体「漁る」。CORPSE_TRAP_CHANCE の確率で中身が罠に化ける (宝箱・「何も無い」と同じ仕掛け) */
+function resolveCorpse(run: RunState, rng: Rng): Outcome {
+  if (rng.chance(CORPSE_TRAP_CHANCE)) return trapOutcome(run, rng);
+  const gold = Math.round((60 + run.depth * 15) * (0.8 + 0.4 * rng.next()));
+  return { hp: 0, gold, potion: 0, kind: 'good', text: `亡骸を漁ると ${gold} G が出てきた。` };
+}
+
+/**
+ * 隊商「買う」。所持金が足りない・回復薬が満杯なら買えない旨を伝えるだけで、
+ * 罠のような代償は無い (単に足を止めただけで終わる)
+ */
+function resolveCaravan(state: GameState): { kind: LogLineView['kind']; text: string } {
+  if (state.potions >= POTION_MAX) return { kind: 'info', text: '薬はもう十分持っている、と行商人は肩をすくめた。' };
+  if (state.gold < CARAVAN_POTION_PRICE) return { kind: 'info', text: '持ち合わせが足りず、行商人はそのまま去っていった。' };
+  state.gold -= CARAVAN_POTION_PRICE;
+  state.potions += 1;
+  return { kind: 'good', text: `回復薬を ${CARAVAN_POTION_PRICE} G で買った。` };
+}
+
+/** 祠「祈る」。泉の代替 (経験値をもらう) と同じ形にする */
+function resolveShrinePray(state: GameState, run: RunState): string {
+  const amount = Math.round(EXP_BASE.battle * (1 + run.depth / 10) * SHRINE_PRAY_EXP_MUL);
+  awardExp(state, run, amount);
+  return `祠に祈った。${amount} の経験値が入った。`;
+}
+
+/** 祠「壊す」。宝箱よりやや軽い金額にする (壊すだけの手間相応) */
+function resolveShrineBreak(run: RunState, rng: Rng): string {
+  const gold = Math.round((60 + run.depth * 15) * (0.8 + 0.4 * rng.next()));
+  run.gold += gold;
+  return `祠を壊すと ${gold} G が出てきた。`;
+}
+
+/**
+ * 落石「押し通る」。HP を払って先へ進む。trapOutcome (受け身の罠) よりやや軽い代償にする
+ * (自分で選んで受ける代償なので、踏んでしまう罠ほど痛くしない)
+ */
+function resolveRockfallPush(run: RunState, rng: Rng): Outcome {
+  const hurt = Math.round((30 + run.depth * 7) * (0.8 + 0.4 * rng.next()));
+  return { hp: -hurt, gold: 0, potion: 0, kind: 'warn', text: `瓦礫を押し通った。${hurt} 受けた。` };
+}
+
+/** 落石の代替「迂回する」。何も得ない代わりに何も失わない */
+function resolveRockfallDetour(): string {
+  return '安全な道を選び、遠回りをした。';
+}
+
+/** 休息「休む」。泉ほど大掛かりではない、HP を戻すだけの軽い休憩 (スキル消耗・ダウンは戻さない) */
+function resolveRestHeal(run: RunState): string {
+  const back = Math.round(run.maxHp * 0.25);
+  heal(run, back);
+  return `束の間、休息を取った。${back} 回復した。`;
+}
+
+/** 休息の代替「先を急ぐ」。回復はしない代わりに経験値をもらう */
+function resolveRestPress(state: GameState, run: RunState): string {
+  const amount = Math.round(EXP_BASE.battle * (1 + run.depth / 10) * REST_PRESS_EXP_MUL);
+  awardExp(state, run, amount);
+  return `休まず先を急いだ。${amount} の経験値が入った。`;
+}
+
 /**
  * 出撃を終える。勝てば戦利品を持ち帰り、負ければその出撃の稼ぎと回復薬を失う。
  * 酒場も道具屋の値段も仕切り直す (粘りすぎを牽制しつつ、出撃間は仕切り直す)
@@ -660,6 +727,32 @@ export function step(state: GameState, action: Action): void {
           applyOutcome(state, run, resolveNothing(run, rng), rng);
           break;
         }
+        case 'corpse': {
+          run.pending = null;
+          applyOutcome(state, run, resolveCorpse(run, rng), rng);
+          break;
+        }
+        case 'caravan': {
+          run.pending = null;
+          const o = resolveCaravan(state);
+          addLog(state, o.kind, o.text);
+          break;
+        }
+        case 'shrine': {
+          run.pending = null;
+          addLog(state, 'good', resolveShrinePray(state, run));
+          break;
+        }
+        case 'rockfall': {
+          run.pending = null;
+          applyOutcome(state, run, resolveRockfallPush(run, rng), rng);
+          break;
+        }
+        case 'rest': {
+          run.pending = null;
+          addLog(state, 'good', resolveRestHeal(run));
+          break;
+        }
       }
       break;
     }
@@ -685,6 +778,24 @@ export function step(state: GameState, action: Action): void {
           if (!run.pending.altAction) break;
           run.pending = null;
           addLog(state, 'good', resolveSpringAlt(state, run));
+          break;
+        }
+        case 'shrine': {
+          if (!run.pending.altAction) break;
+          run.pending = null;
+          addLog(state, 'good', resolveShrineBreak(run, rng));
+          break;
+        }
+        case 'rockfall': {
+          if (!run.pending.altAction) break;
+          run.pending = null;
+          addLog(state, 'info', resolveRockfallDetour());
+          break;
+        }
+        case 'rest': {
+          if (!run.pending.altAction) break;
+          run.pending = null;
+          addLog(state, 'good', resolveRestPress(state, run));
           break;
         }
         default:

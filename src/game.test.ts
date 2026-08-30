@@ -799,6 +799,151 @@ describe('宝箱・「何も無い」に隠れた罠', () => {
   });
 });
 
+describe('隊商イベント', () => {
+  it('所持金が足りれば回復薬を 1 個買える', () => {
+    const state = fresh();
+    step(state, { type: 'sortie', sectorId: 1 });
+    const run = state.run!;
+    state.gold = 1000;
+    state.potions = 0;
+    const goldBefore = state.gold;
+    run.pending = EVENTS.find((e) => e.kind === 'caravan')!;
+    step(state, { type: 'resolve' });
+    expect(state.potions).toBe(1);
+    expect(state.gold).toBeLessThan(goldBefore);
+    expect(run.pending).toBeNull();
+  });
+
+  it('所持金が足りなければ何も起きない', () => {
+    const state = fresh();
+    step(state, { type: 'sortie', sectorId: 1 });
+    const run = state.run!;
+    state.gold = 0;
+    state.potions = 0;
+    run.pending = EVENTS.find((e) => e.kind === 'caravan')!;
+    step(state, { type: 'resolve' });
+    expect(state.potions).toBe(0);
+    expect(state.gold).toBe(0);
+  });
+
+  it('回復薬が満杯なら所持金があっても買わない', () => {
+    const state = fresh();
+    step(state, { type: 'sortie', sectorId: 1 });
+    const run = state.run!;
+    state.gold = 1000;
+    state.potions = 3;
+    const goldBefore = state.gold;
+    run.pending = EVENTS.find((e) => e.kind === 'caravan')!;
+    step(state, { type: 'resolve' });
+    expect(state.potions).toBe(3);
+    expect(state.gold).toBe(goldBefore);
+  });
+});
+
+describe('祠イベント (常に二択)', () => {
+  it('「祈る」で経験値が入る', () => {
+    const state = fresh();
+    step(state, { type: 'sortie', sectorId: 1 });
+    const run = state.run!;
+    const member = [...run.party.front, ...run.party.reserve].find((f) => f !== null)!;
+    const entry = state.owned.find((c) => c.id === member.id)!;
+    const expBefore = entry.exp;
+    run.pending = EVENTS.find((e) => e.kind === 'shrine')!;
+    step(state, { type: 'resolve' });
+    expect(entry.exp).toBeGreaterThan(expBefore);
+    expect(run.pending).toBeNull();
+  });
+
+  it('「壊す」で金が入る', () => {
+    const state = fresh();
+    step(state, { type: 'sortie', sectorId: 1 });
+    const run = state.run!;
+    const goldBefore = run.gold;
+    run.pending = EVENTS.find((e) => e.kind === 'shrine')!;
+    step(state, { type: 'resolve-alt' });
+    expect(run.gold).toBeGreaterThan(goldBefore);
+    expect(run.pending).toBeNull();
+  });
+});
+
+describe('落石イベント (常に二択)', () => {
+  it('「押し通る」で HP を失う', () => {
+    const state = fresh();
+    step(state, { type: 'sortie', sectorId: 1 });
+    const run = state.run!;
+    run.hp = run.maxHp;
+    run.pending = EVENTS.find((e) => e.kind === 'rockfall')!;
+    step(state, { type: 'resolve' });
+    expect(run.hp).toBeLessThan(run.maxHp);
+    expect(run.pending).toBeNull();
+  });
+
+  it('「迂回する」は何も失わない', () => {
+    const state = fresh();
+    step(state, { type: 'sortie', sectorId: 1 });
+    const run = state.run!;
+    const hpBefore = run.hp;
+    const goldBefore = run.gold;
+    run.pending = EVENTS.find((e) => e.kind === 'rockfall')!;
+    step(state, { type: 'resolve-alt' });
+    expect(run.hp).toBe(hpBefore);
+    expect(run.gold).toBe(goldBefore);
+    expect(run.pending).toBeNull();
+  });
+});
+
+describe('休息イベント (常に二択)', () => {
+  it('「休む」で HP が回復する', () => {
+    const state = fresh();
+    step(state, { type: 'sortie', sectorId: 1 });
+    const run = state.run!;
+    run.hp = 1;
+    run.pending = EVENTS.find((e) => e.kind === 'rest')!;
+    step(state, { type: 'resolve' });
+    expect(run.hp).toBeGreaterThan(1);
+    expect(run.pending).toBeNull();
+  });
+
+  it('「先を急ぐ」は回復せず経験値が入る', () => {
+    const state = fresh();
+    step(state, { type: 'sortie', sectorId: 1 });
+    const run = state.run!;
+    run.hp = 1;
+    const member = [...run.party.front, ...run.party.reserve].find((f) => f !== null)!;
+    const entry = state.owned.find((c) => c.id === member.id)!;
+    const expBefore = entry.exp;
+    run.pending = EVENTS.find((e) => e.kind === 'rest')!;
+    step(state, { type: 'resolve-alt' });
+    expect(run.hp).toBe(1);
+    expect(entry.exp).toBeGreaterThan(expBefore);
+    expect(run.pending).toBeNull();
+  });
+});
+
+describe('死体イベントに隠れた罠', () => {
+  it('漁ると金が入るか、まれに中身が罠になる (統計テスト)', () => {
+    const state = fresh();
+    step(state, { type: 'sortie', sectorId: 1 });
+    const run = state.run!;
+    let trapCount = 0;
+    let goldCount = 0;
+    for (let i = 0; i < 300; i++) {
+      run.hp = run.maxHp; // 罠で全滅させないため、毎回全回復させておく
+      run.gold = 0;
+      run.pending = EVENTS.find((e) => e.kind === 'corpse')!;
+      step(state, { type: 'resolve' });
+      if (run.gold > 0) goldCount += 1;
+      else trapCount += 1;
+    }
+    expect(goldCount).toBeGreaterThan(0);
+    expect(trapCount).toBeGreaterThan(0);
+    // 初期値は 25%。統計テストなので幅を持たせる
+    const rate = trapCount / 300;
+    expect(rate).toBeGreaterThan(0.1);
+    expect(rate).toBeLessThan(0.4);
+  });
+});
+
 describe('ダンジョン内の加入イベント', () => {
   it('コモンが 1 人その場で生成され、owned とデッキに加わる', () => {
     const state = fresh();

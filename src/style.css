@@ -230,7 +230,9 @@ button:active:not(:disabled) {
 .event-icon-art {
   margin: 0;
   font-size: 13px;
-  line-height: 1.2;
+  /* 罫線素片の縦線 (│) は行の間でつながって初めて 1 本の線に見える。
+     1.2 のままだと行間に隙間ができて縦線が途切れて見えるので 1 にする */
+  line-height: 1;
   white-space: pre;
   text-align: center;
   color: var(--dim);
@@ -241,18 +243,26 @@ button:active:not(:disabled) {
   color: var(--bad);
 }
 
-.event-icon-treasure {
+.event-icon-treasure,
+.event-icon-corpse,
+.event-icon-caravan {
   color: var(--warn);
 }
 
 .event-icon-spring,
 .event-icon-boss-alt,
-.event-icon-recruit {
+.event-icon-recruit,
+.event-icon-shrine,
+.event-icon-rest {
   color: var(--good);
 }
 
 .event-icon-nothing {
   color: var(--dim);
+}
+
+.event-icon-rockfall {
+  color: var(--bad);
 }
 
 .event-icon-boss {

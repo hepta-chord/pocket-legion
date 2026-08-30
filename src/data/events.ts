@@ -8,7 +8,19 @@ import type { Rng } from '../rng';
 // 罠は単独のイベントとしては存在しない。宝箱・「何も無い」を解決したときの隠れた結果
 // (game.ts の trapOutcome) としてだけ出るので、この EventKind には 'trap' を持たない
 // (docs/plan.md「イベントの分岐」)
-export type EventKind = 'battle' | 'elite' | 'treasure' | 'spring' | 'nothing' | 'recruit' | 'boss-alt';
+export type EventKind =
+  | 'battle'
+  | 'elite'
+  | 'treasure'
+  | 'spring'
+  | 'nothing'
+  | 'recruit'
+  | 'caravan'
+  | 'shrine'
+  | 'rockfall'
+  | 'corpse'
+  | 'rest'
+  | 'boss-alt';
 
 export interface EventDef {
   kind: EventKind;
@@ -23,6 +35,12 @@ export interface EventDef {
    * boss-alt はボス前に固定で置く分岐なので、この抽選を経ずに必ず両方出す
    */
   altAction?: string;
+  /**
+   * true なら altAction を持っていても ALT_CHANCE の抽選を経ず、常に二択のまま見せる。
+   * 祠・落石・休息は「選ばせるためのイベント」そのものなので、たまに二択が消えては
+   * 存在意義が無くなる (docs/plan.md「分岐を増やす」)
+   */
+  alwaysAlt?: boolean;
 }
 
 /**
@@ -38,6 +56,8 @@ export const ALT_CHANCE = 0.2;
 export const TREASURE_TRAP_CHANCE = 0.3;
 /** 「何も無い」場所を通ったときに、実は罠が仕掛けてあった確率 */
 export const NOTHING_TRAP_CHANCE = 0.25;
+/** 死体を漁ったときに、実は罠が仕掛けてあった確率。宝箱・「何も無い」と同じ仕掛け */
+export const CORPSE_TRAP_CHANCE = 0.25;
 
 export const EVENTS: readonly EventDef[] = [
   { kind: 'battle', weight: 50, title: '魔物の群れ', body: '通路の先が塞がれている。', action: '戦う' },
@@ -70,6 +90,49 @@ export const EVENTS: readonly EventDef[] = [
     action: '進む',
   },
   { kind: 'recruit', weight: 5, title: '生存者', body: '壁際に人影がうずくまっている。', action: '声をかける' },
+  {
+    kind: 'caravan',
+    weight: 8,
+    title: '行商人',
+    body: '荷を積んだ隊商とすれ違った。',
+    action: '買う',
+  },
+  {
+    kind: 'shrine',
+    weight: 8,
+    title: '古い祠',
+    body: '苔むした祠がひっそりと佇んでいる。',
+    // 「選ばせるためのイベント」なので ALT_CHANCE の抽選を経ず常に二択にする
+    action: '祈る',
+    altAction: '壊す',
+    alwaysAlt: true,
+  },
+  {
+    kind: 'rockfall',
+    weight: 8,
+    title: '崩れた通路',
+    body: '瓦礫が道を塞いでいる。',
+    action: '押し通る',
+    altAction: '迂回する',
+    alwaysAlt: true,
+  },
+  {
+    kind: 'corpse',
+    weight: 8,
+    title: '冒険者の亡骸',
+    body: '力尽きた冒険者が横たわっている。',
+    // 開けるまで中身は分からない (CORPSE_TRAP_CHANCE で罠に化ける)。宝箱と同じ仕掛け
+    action: '漁る',
+  },
+  {
+    kind: 'rest',
+    weight: 8,
+    title: '安全な窪み',
+    body: '身を隠せそうな窪みがある。',
+    action: '休む',
+    altAction: '先を急ぐ',
+    alwaysAlt: true,
+  },
 ];
 
 export const TOTAL_WEIGHT = EVENTS.reduce((sum, e) => sum + e.weight, 0);
@@ -105,6 +168,8 @@ export function pickEvent(roll: number): EventDef {
  */
 export function decideOccurrence(def: EventDef, rng: Rng): EventDef {
   if (!def.altAction) return def;
+  // 祠・落石・休息 (alwaysAlt) は ALT_CHANCE の抽選を経ず、必ず二択のまま返す
+  if (def.alwaysAlt) return def;
   if (rng.chance(ALT_CHANCE)) return def;
   return { ...def, altAction: undefined };
 }
