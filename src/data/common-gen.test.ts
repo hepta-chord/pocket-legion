@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { CHARACTERS } from './characters';
 import { FACTIONS } from './factions';
 import { generateCommon, NAME_POOLS, SKILL_POOLS } from './common-gen';
 import { Rng } from '../rng';
@@ -53,5 +54,12 @@ describe('generateCommon', () => {
     const attacks = new Set<number>();
     for (let i = 0; i < 10; i++) attacks.add(generateCommon('mercs', rng, i).baseAttack);
     expect(attacks.size).toBeGreaterThan(1);
+  });
+
+  it('レアの名前はコモンの名前候補 (NAME_POOLS) と重ならない (docs/plan.md「レアの名前」)', () => {
+    for (const c of CHARACTERS) {
+      if (c.rarity !== 'rare') continue;
+      expect(NAME_POOLS[c.faction]).not.toContain(c.name);
+    }
   });
 });

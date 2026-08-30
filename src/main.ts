@@ -42,10 +42,11 @@ if (loaded.discarded) addLog(state, 'info', '前のセーブは形式が古い�
 // 理由: セーブしたい「進行」ではなく「今どの画面を見ているか」でしかなく、
 // リロードすれば拠点トップやダンジョンの通常画面に戻ってもプレイヤーは困らないため。
 // (docs/plan.md 4 節の「main.ts のローカル状態にしてもよい」を選んだ)
-// 拠点は 2 階層のドリルダウンにする。ホームは「酒場」「探索」の 2 択だけを出し、
+// 拠点は 2 階層のドリルダウンにする。ホームは「酒場」「道具屋」「探索」の 3 択だけを出し、
 // 探索を選ぶと区画の一覧 (explore) に進む。将来、迷宮以外の行き先や
-// 複数の迷宮が増えても、この階層を作り直さずに済む
-type TownPage = 'home' | 'explore' | 'tavern' | 'formation';
+// 複数の迷宮が増えても、この階層を作り直さずに済む。
+// 道具屋 (shop) は酒場と役目が違う (人を雇う場所と物を買う場所) ので、ページを分けてある
+type TownPage = 'home' | 'explore' | 'tavern' | 'shop' | 'formation';
 let page: TownPage = 'home';
 let dungeonFormationOpen = false;
 
@@ -250,6 +251,23 @@ function renderHomeStage(s: TownView): void {
   });
   list.append(tavernCard);
 
+  // 道具屋。酒場が人を雇う場所なので、物 (回復薬) を買う場所は分けてある
+  const shopCard = document.createElement('button');
+  shopCard.type = 'button';
+  shopCard.className = 'card card-tappable';
+  const shopName = document.createElement('p');
+  shopName.className = 'card-name';
+  shopName.textContent = '道具屋';
+  const shopSub = document.createElement('p');
+  shopSub.className = 'card-sub';
+  shopSub.textContent = `回復薬 ${s.potions}/${s.potionMax} 個`;
+  shopCard.append(shopName, shopSub);
+  shopCard.addEventListener('click', () => {
+    page = 'shop';
+    render();
+  });
+  list.append(shopCard);
+
   const exploreCard = document.createElement('button');
   exploreCard.type = 'button';
   exploreCard.className = 'card card-tappable';
@@ -343,6 +361,35 @@ function renderTavernStage(s: TownView): void {
   stageBody.append(list);
 }
 
+/**
+ * 道具屋。回復薬だけを売る (docs/plan.md には無い追加機能。不具合修正の依頼と同じ経路で足された)。
+ * 買う操作自体は操作列 (renderTownCluster) のボタンが受け持つので、ここでは一覧を見せるだけ。
+ * 他のページと同じ骨格 (一覧はステージ側、戻るは操作列) に揃える
+ */
+function renderShopStage(s: TownView): void {
+  const head = document.createElement('p');
+  head.className = 'lead';
+  head.textContent = '道具屋';
+  stageBody.append(head);
+
+  const list = document.createElement('div');
+  list.className = 'list';
+
+  const card = document.createElement('div');
+  card.className = 'card';
+  const name = document.createElement('p');
+  name.className = 'card-name';
+  name.textContent = `回復薬 (所持 ${s.potions}/${s.potionMax})`;
+  const sub = document.createElement('p');
+  sub.className = 'card-sub';
+  sub.textContent =
+    s.potions >= s.potionMax ? '持てるだけ持っている' : `次の 1 個: ${s.potionPrice} G`;
+  card.append(name, sub);
+  list.append(card);
+
+  stageBody.append(list);
+}
+
 function renderFormationStage(s: TownView): void {
   const head = document.createElement('p');
   head.className = 'lead';
@@ -395,6 +442,7 @@ function renderStageBody(vm: ViewModel): void {
     if (page === 'home') renderHomeStage(s);
     else if (page === 'explore') renderExploreStage(s);
     else if (page === 'tavern') renderTavernStage(s);
+    else if (page === 'shop') renderShopStage(s);
     else renderFormationStage(s);
     return;
   }
@@ -544,7 +592,12 @@ function displaySlotCard(character: FormationCharacterView | null): HTMLElement 
   const lv = document.createElement('p');
   lv.className = 'slot-name';
   lv.textContent = lvLabel(character);
-  div.append(name, sub, lv);
+  // 攻撃力は陣営倍率と前衛補正を掛けた最終値 (FormationCharacterView.attack) をそのまま出す。
+  // 編成・拠点では既に出ているので、探索画面でも揃える (docs/batch-next.md 5 節)
+  const atk = document.createElement('p');
+  atk.className = 'slot-name';
+  atk.textContent = `攻撃 ${character.attack}`;
+  div.append(name, sub, lv, atk);
   return div;
 }
 
@@ -1021,6 +1074,11 @@ function renderTownCluster(s: TownView): void {
   // に出ているので、ここには「引き直す・戻る」の 2 つだけでよい
   if (page === 'tavern') {
     controlsEl.append(actionButton(`引き直す (${s.rerollCost} G)`, { type: 'reroll-tavern' }, !s.rerollAffordable));
+  }
+
+  // 道具屋も同じ骨格。一覧 (renderShopStage) は見せるだけで、買う操作をここに置く
+  if (page === 'shop') {
+    controlsEl.append(actionButton(`回復薬を買う (${s.potionPrice} G)`, { type: 'buy-potion' }, !s.potionBuyable));
   }
 
   // 探索は一覧の各区画がそのまま出撃ボタンになるので、「戻る」だけを置けばよい

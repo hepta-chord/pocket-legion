@@ -99,6 +99,12 @@ export interface TownView {
   rerollCost: number;
   /** 所持金で引き直せるか */
   rerollAffordable: boolean;
+  /** 道具屋で回復薬を買うのに要る今の値段。買うたびに上がり、出撃を終えると初期値に戻る */
+  potionPrice: number;
+  /** 回復薬の所持上限 */
+  potionMax: number;
+  /** 所持上限に達しておらず、かつ所持金で買えるか */
+  potionBuyable: boolean;
   /** 所持キャラの一覧 */
   roster: FormationCharacterView[];
   formation: FormationEditorView;

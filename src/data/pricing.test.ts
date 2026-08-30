@@ -71,7 +71,9 @@ describe('priceOf', () => {
 
   it('レアはおよそ 400 G 帯、コモンはおよそ 120 G 帯に収まる (現行キャラ定義で確認)', async () => {
     const { CHARACTERS } = await import('./characters');
-    const rares = CHARACTERS.filter((c) => c.rarity === 'rare' && c.id !== 'hero');
+    // hero・aide2 (カクサン) は所持から外れない固定キャラで酒場に並ばないので、
+    // 酒場向けの値付け想定 (400 G 帯) の対象から外す
+    const rares = CHARACTERS.filter((c) => c.rarity === 'rare' && c.id !== 'hero' && c.id !== 'aide2');
     for (const r of rares) {
       const p = priceOf(r);
       expect(p).toBeGreaterThan(250);

@@ -5,9 +5,12 @@
 // 2 コスト強攻撃のどちらかで戦う。前衛の大半は物理スキルの手数で戦い、
 // 魔法と必殺は一撃が明確に強い代わりに使うたび出撃を通してコストが上がる
 // 「切りどころを選ぶ札」になる。
+// (例外: カクサンはレア扱いだが、バフ剥がしとガードだけを持つ純粋な支援・壁役で、
+// 攻撃スキルそのものを持たない。0 コスト攻撃の有無ではなく「所持から外れない」ことが
+// レア扱いの理由なので、この例外は成立する)
 //
 // コモンはここに名簿を持たない (data/common-gen.ts でその場ごとに生成する)。
-// ここに残るのは固定で定義するキャラ: 初期の 2 人 (主人公・相棒) と、
+// ここに残るのは固定で定義するキャラ: 初期の 3 人 (主人公コーモン・相棒スケサンとカクサン) と、
 // レア 4 人 (0 コスト通常攻撃を持つ熟練者。スキル構成もパラメータも固定)。
 //
 // レベル・成長カーブ (growth.ts) は個体ごとに持つ。CHARACTERS の要素はあくまで
@@ -100,6 +103,30 @@ const mateHeal: ActionSkillDef = {
   effect: { kind: 'heal', power: 0.3 },
 };
 
+/**
+ * もう 1 人の相棒 (カクサン) のバフ剥がし。物理と同じコスト規則 (ターン内 +1 で頭打ち) の
+ * 1 コストを初期値にする (docs/plan.md「バフ剥がし」)
+ */
+const dispel: ActionSkillDef = {
+  id: 'dispel',
+  name: 'バフ剥がし',
+  shortName: '剥がし',
+  category: 'physical',
+  baseCost: 1,
+  effect: { kind: 'dispel' },
+};
+
+/** カクサンのガード 1 枚積み。common-gen.ts の ward1 と同じ定義だが、生成コモンとは
+ * 独立した固定キャラなので、ここでも別オブジェクトとして持つ (id は共有してよい) */
+const aideWard: ActionSkillDef = {
+  id: 'ward1',
+  name: 'ガード',
+  shortName: 'ガード',
+  category: 'physical',
+  baseCost: 1,
+  effect: { kind: 'ward', stacks: 1 },
+};
+
 export interface CharacterEntry {
   id: string;
   name: string;
@@ -164,10 +191,11 @@ export function skillLabels(entry: CharacterEntry): string[] {
 }
 
 export const CHARACTERS: readonly CharacterEntry[] = [
-  // 初期の 2 人。所持から外れない (roster の初期値に固定で入る)
+  // 固定の 3 人。所持から外れない (roster の初期値に固定で入る)。名前も固定にする
+  // (docs/plan.md「初期の 2 人」。主人公 = コーモン、相棒 = スケサンとカクサン)
   {
     id: 'hero',
-    name: '主人公',
+    name: 'コーモン',
     // 辺境に置く。0 コストの斬撃と必殺という構成が辺境の得意系統 (必殺と代償) に合い、
     // 人口の最も少ない陣営なので、陣営倍率を主人公の側から伸ばすのが難しくなる。
     // レベル上限が無い代わりに倍率で伸びにくい、という釣り合いになる
@@ -187,7 +215,7 @@ export const CHARACTERS: readonly CharacterEntry[] = [
   },
   {
     id: 'mate',
-    name: '相棒',
+    name: 'スケサン',
     faction: 'order',
     rarity: 'common',
     baseAttack: 90,
@@ -201,13 +229,36 @@ export const CHARACTERS: readonly CharacterEntry[] = [
     // 早熟型。安いヒーリングで序盤から支える相棒の役回りに合わせる
     curve: 'early',
   },
+  {
+    id: 'aide2',
+    name: 'カクサン',
+    // 傭兵団に置く。バフ剥がしが無いと自分を固め続けるボスに手が無くなるので、
+    // 陣営を問わず最初から持たせる (docs/plan.md「初期の 2 人」「バフ剥がし」)
+    faction: 'mercs',
+    rarity: 'rare',
+    // 攻撃力・体力はコモンの壁役と同程度でよい (common-gen.ts BASE_STATS.wall と揃える)
+    baseAttack: 75,
+    baseVitality: 90,
+    skills: [dispel, aideWard],
+    passives: [],
+    level: 1,
+    exp: 0,
+    maxLevel: 30,
+    growth: 1.0,
+    curve: 'linear',
+  },
 
   // レア 4 人。0 コスト攻撃を軸に、基礎値か有能なスキルで差をつける。陣営は散らす。
   // 4 人を 2 人ずつ酒場限定/ダンジョン限定に分ける (docs/plan.md「レアリティと入手」)。
+  // 名前は所属陣営の題材に沿った固定名にする (docs/plan.md「レアの名前」)。
+  // コモンはこの題材から抽選で引く (common-gen.ts NAME_POOLS) ので、レアの名前は
+  // その候補群と重ならないものを選んである
+  // (王国 = 天気の英語、教団 = 果物のイタリア語、傭兵団 = 酒、辺境 = 山の日本語)。
   // スキル構成とパラメータは分岐前のまま変えていない
   {
     id: 'r1',
-    name: '熟練剣士',
+    // テンペスト (tempest, 大嵐)。NAME_POOLS.kingdom (レイン/サンダー/ストームなど) と重複しない
+    name: 'テンペスト',
     faction: 'kingdom',
     rarity: 'rare',
     baseAttack: 140,
@@ -223,7 +274,8 @@ export const CHARACTERS: readonly CharacterEntry[] = [
   },
   {
     id: 'r2',
-    name: '教団の賢者',
+    // アボカド (avocado)。NAME_POOLS.order (メーラ/ペーラ/ウーヴァなど) と重複しない
+    name: 'アボカド',
     faction: 'order',
     rarity: 'rare',
     baseAttack: 130,
@@ -240,7 +292,8 @@ export const CHARACTERS: readonly CharacterEntry[] = [
   },
   {
     id: 'r3',
-    name: '傭兵の豪傑',
+    // カルヴァドス (Calvados、林檎の蒸留酒)。NAME_POOLS.mercs (ウォッカ/ジン/ラムなど) と重複しない
+    name: 'カルヴァドス',
     faction: 'mercs',
     rarity: 'rare',
     baseAttack: 135,
@@ -257,7 +310,8 @@ export const CHARACTERS: readonly CharacterEntry[] = [
   },
   {
     id: 'r4',
-    name: '辺境の捨て身剣士',
+    // ツルギ (剣岳)。NAME_POOLS.frontier (フジ/アサマ/ハクバなど) と重複しない
+    name: 'ツルギ',
     faction: 'frontier',
     rarity: 'rare',
     baseAttack: 150,

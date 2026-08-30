@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { CHARACTERS, effectiveAttack } from './data/characters';
-import { generateCommon } from './data/common-gen';
+import { CHARACTERS, effectiveAttack, type CharacterEntry } from './data/characters';
+import { generateCommon, NAME_POOLS } from './data/common-gen';
 import { BOSS_ALT_EVENT, EVENTS } from './data/events';
+import { FACTION_HIRE_CAP, FACTIONS } from './data/factions';
 import { priceOf } from './data/pricing';
 import { newGame, step, toViewModel, type Action, type GameState } from './game';
 import { Rng } from './rng';
@@ -94,22 +95,50 @@ describe('出撃', () => {
     const state = fresh();
     const goldBefore = state.gold;
     step(state, { type: 'sortie', sectorId: 1 });
-    if (state.run) state.run.hp = 1;
-    // 被害の出るイベント (即時解決も戦闘も) に当たるまで進めれば、HP 1 では耐えられない
-    playOut(state);
+    // 戦闘に入り、確実に全滅させる (敵の行動は「何もしない」を引くこともあるので、
+    // HP を低くして自然な被弾待ちにするのではなく battle.hp を直接 0 にして決め打ちする)
+    forceBattleEvent(state, 'battle');
+    step(state, { type: 'resolve' });
+    expect(state.battle).not.toBeNull();
+    state.battle!.hp = 0;
+    step(state, { type: 'battle-end-turn' });
     expect(state.result?.won).toBe(false);
     expect(state.gold).toBe(goldBefore);
     expect(state.result?.gold).toBe(0);
   });
 });
 
-describe('初期の 2 人', () => {
-  it('主人公と相棒が必ず前衛にいる', () => {
+describe('初期の 3 人', () => {
+  it('主人公・相棒・カクサンが必ず前衛にいる', () => {
     const state = fresh();
     step(state, { type: 'sortie', sectorId: 1 });
     const front = state.run!.party.front;
     expect(front.some((f) => f?.id === 'hero')).toBe(true);
     expect(front.some((f) => f?.id === 'mate')).toBe(true);
+    expect(front.some((f) => f?.id === 'aide2')).toBe(true);
+  });
+
+  it('固定 3 人の名前がコーモン・スケサン・カクサンで、カクサンはバフ剥がしとガード 1 を持つ', () => {
+    const state = fresh();
+    const hero = state.owned.find((c) => c.id === 'hero')!;
+    const mate = state.owned.find((c) => c.id === 'mate')!;
+    const aide2 = state.owned.find((c) => c.id === 'aide2')!;
+    expect(hero.name).toBe('コーモン');
+    expect(mate.name).toBe('スケサン');
+    expect(aide2.name).toBe('カクサン');
+    expect(aide2.rarity).toBe('rare');
+    const skillKinds = aide2.skills.map((s) => s.effect.kind).sort();
+    expect(skillKinds).toEqual(['dispel', 'ward'].sort());
+  });
+
+  it('カクサンは雇用上限に数えない (傭兵団の上限に達していても酒場に居座れる)', () => {
+    const state = fresh();
+    expect(state.owned.some((c) => c.id === 'aide2')).toBe(true);
+    // aide2 自身は factionCount の対象外なので、傭兵団の残り枠は上限そのままになる
+    const vm = toViewModel(state);
+    if (vm.screen.kind !== 'town') throw new Error('拠点ではない');
+    // 上限に達していなければ酒場・formation どちらの陣営倍率一覧にも普通に出る
+    expect(vm.screen.formation.factionMultipliers.some((f) => f.faction === 'mercs')).toBe(true);
   });
 });
 
@@ -290,10 +319,11 @@ describe('大技 1 ターン前のアナウンス', () => {
 });
 
 describe('初期状態', () => {
-  it('owned は主人公と相棒だけ、所持金は 300、酒場には 3 人が並ぶ', () => {
+  it('owned は主人公と相棒だけ、所持金は 300、酒場には 3 人が並ぶ、回復薬は 1 個持っている', () => {
     const state = fresh();
-    expect(state.owned.map((c) => c.id)).toEqual(['hero', 'mate']);
+    expect(state.owned.map((c) => c.id)).toEqual(['hero', 'mate', 'aide2']);
     expect(state.gold).toBe(300);
+    expect(state.potions).toBe(1);
     expect(state.tavern).toHaveLength(3);
     for (const c of state.tavern) {
       expect(state.owned.some((o) => o.id === c.id)).toBe(false);
@@ -390,6 +420,73 @@ describe('酒場: 雇用上限', () => {
   });
 });
 
+describe('酒場: 所持済みの名前の重複 (不具合の修正)', () => {
+  it('所持済みキャラと同じ名前は酒場に並ばない (統計テスト)', () => {
+    const state = fresh();
+    state.gold = 1_000_000;
+    // 引き直すたびに 1 人雇って owned を増やしながら、そのたびに酒場と所持で名前が
+    // 重複していないことを確かめる
+    for (let i = 0; i < 30; i++) {
+      step(state, { type: 'reroll-tavern' });
+      const ownedNames = new Set(state.owned.map((o) => o.name));
+      for (const t of state.tavern) expect(ownedNames.has(t.name)).toBe(false);
+      if (state.tavern.length > 0) step(state, { type: 'hire', id: state.tavern[0].id });
+    }
+  });
+
+  it('名前の候補が尽きた陣営は、雇用上限に達していなくても酒場の抽選から外れる (統計テスト)', () => {
+    const state = fresh();
+    state.gold = 1_000_000;
+    // 辺境 (NAME_POOLS.frontier) の名前を、所持済み名として全部埋めてしまう。
+    // hasFreeName は名前だけを見て陣営そのものは見ないので、owned に積む個体の faction は
+    // 何でもよい (ここでは frontier の雇用上限を巻き込まないよう、あえて別陣営にしておく)
+    let serial = 0;
+    const dummies: CharacterEntry[] = NAME_POOLS.frontier.map((name) => ({
+      id: `dummy-${serial++}`,
+      name,
+      faction: 'kingdom',
+      rarity: 'common',
+      baseAttack: 1,
+      baseVitality: 1,
+      skills: [],
+      passives: [],
+      level: 1,
+      exp: 0,
+      maxLevel: 1,
+      growth: 0,
+      curve: 'linear',
+    }));
+    state.owned.push(...dummies);
+
+    for (let i = 0; i < 50; i++) {
+      step(state, { type: 'reroll-tavern' });
+      expect(state.tavern.some((c) => c.faction === 'frontier')).toBe(false);
+    }
+  });
+
+  it('全陣営が上限に達し、未所持レアも無ければ、酒場が空になり引き直せなくなる', () => {
+    const state = fresh();
+    state.gold = 1_000_000;
+    const rng = new Rng(2);
+    let serial = 500;
+    for (const faction of FACTIONS) {
+      for (let i = 0; i < FACTION_HIRE_CAP[faction]; i++) {
+        state.owned.push(generateCommon(faction, rng, serial++));
+      }
+    }
+    // 酒場限定レア (source: 'tavern') の r1・r3 も所持済みにしておく (未所持レアが残っていると
+    // それが酒場に並んでしまい、空にならないため)
+    state.owned.push(CHARACTERS.find((c) => c.id === 'r1')!, CHARACTERS.find((c) => c.id === 'r3')!);
+
+    step(state, { type: 'reroll-tavern' });
+
+    expect(state.tavern).toHaveLength(0);
+    const vm = toViewModel(state);
+    if (vm.screen.kind !== 'town') throw new Error('拠点ではない');
+    expect(vm.screen.rerollAffordable).toBe(false);
+  });
+});
+
 describe('酒場の引き直し', () => {
   it('引き直すと金が減り、賃料が上がる', () => {
     const state = fresh();
@@ -423,11 +520,63 @@ describe('酒場の引き直し', () => {
   });
 });
 
+describe('道具屋', () => {
+  it('買うと回復薬が 1 増え、金が減る', () => {
+    const state = fresh();
+    state.gold = 100000;
+    const potionsBefore = state.potions;
+    const priceBefore = state.potionPrice;
+    step(state, { type: 'buy-potion' });
+    expect(state.potions).toBe(potionsBefore + 1);
+    expect(state.gold).toBe(100000 - priceBefore);
+  });
+
+  it('買うたびに値段が上がる', () => {
+    const state = fresh();
+    state.gold = 100000;
+    const priceBefore = state.potionPrice;
+    step(state, { type: 'buy-potion' });
+    expect(state.potionPrice).toBeGreaterThan(priceBefore);
+  });
+
+  it('金が足りなければ買えない', () => {
+    const state = fresh();
+    state.gold = 0;
+    const potionsBefore = state.potions;
+    const priceBefore = state.potionPrice;
+    step(state, { type: 'buy-potion' });
+    expect(state.potions).toBe(potionsBefore);
+    expect(state.gold).toBe(0);
+    expect(state.potionPrice).toBe(priceBefore);
+  });
+
+  it('所持上限 (3 個) に達すると買えなくなる', () => {
+    const state = fresh();
+    state.gold = 1000000;
+    state.potions = 3;
+    const priceBefore = state.potionPrice;
+    step(state, { type: 'buy-potion' });
+    expect(state.potions).toBe(3);
+    expect(state.potionPrice).toBe(priceBefore);
+  });
+
+  it('出撃を終えると値段が初期値に戻る', () => {
+    const state = fresh();
+    state.gold = 100000;
+    const initial = state.potionPrice;
+    step(state, { type: 'buy-potion' });
+    expect(state.potionPrice).toBeGreaterThan(initial);
+    step(state, { type: 'sortie', sectorId: 1 });
+    step(state, { type: 'retreat' });
+    expect(state.potionPrice).toBe(initial);
+  });
+});
+
 describe('出撃時のパーティ編成', () => {
-  it('owned 全員でパーティを組む (owned が 2 人なら 2 人で潜る)', () => {
+  it('owned 全員でパーティを組む (owned が 3 人なら 3 人で潜る)', () => {
     const state = fresh();
     step(state, { type: 'sortie', sectorId: 1 });
-    expect(state.run?.party.front.filter(Boolean)).toHaveLength(2);
+    expect(state.run?.party.front.filter(Boolean)).toHaveLength(3);
   });
 
   it('雇ったキャラも次の出撃からパーティに入る', () => {
@@ -565,8 +714,10 @@ describe('回復薬', () => {
     const state = fresh();
     state.potions = 3;
     step(state, { type: 'sortie', sectorId: 1 });
-    if (state.run) state.run.hp = 1;
-    playOut(state);
+    forceBattleEvent(state, 'battle');
+    step(state, { type: 'resolve' });
+    state.battle!.hp = 0;
+    step(state, { type: 'battle-end-turn' });
     expect(state.result?.won).toBe(false);
     expect(state.potions).toBe(0);
   });
@@ -739,7 +890,7 @@ describe('ViewModel: ダンジョンの前衛・控え・ダウンの表示', ()
     const vm = toViewModel(state);
     expect(vm.screen.kind).toBe('dungeon');
     if (vm.screen.kind !== 'dungeon') return;
-    expect(vm.screen.frontCount).toBe(1);
+    expect(vm.screen.frontCount).toBe(2);
     expect(vm.screen.downedCount).toBe(1);
   });
 });
@@ -752,7 +903,7 @@ describe('ViewModel: 拠点の酒場と所持一覧', () => {
     if (vm.screen.kind !== 'town') return;
     expect(vm.screen.tavern).toHaveLength(3);
     expect(vm.screen.tavern[0].price).toBeGreaterThan(0);
-    expect(vm.screen.roster.map((r) => r.id)).toEqual(['hero', 'mate']);
+    expect(vm.screen.roster.map((r) => r.id)).toEqual(['hero', 'mate', 'aide2']);
     expect(vm.screen.roster[0].rarity).toBe('rare');
   });
 });
