@@ -14,6 +14,15 @@ export interface Growable {
   maxLevel: number;
   growth: number;
   curve: Curve;
+  /**
+   * カーブを正規化する基準レベル。省略すると maxLevel を使う。
+   *
+   * 上限の無いキャラ (主人公) は maxLevel が極端に大きいので、
+   * 進捗 (level-1)/(maxLevel-1) がいつまでも 0 に近く、まったく育たなくなる。
+   * 基準を別に持たせて、そこを 1 周ぶんとして数える。
+   * 基準を越えたぶんも伸び続けるので、上限が無いという性格はそのまま残る。
+   */
+  curveRef?: number;
 }
 
 /** カーブの型ごとの形。直線 t / 早熟 sqrt(t) / 晩成 t^2。t=0 と t=1 はどの型でも同じ値になる */
@@ -28,10 +37,19 @@ function curveShape(curve: Curve, t: number): number {
   }
 }
 
-/** 0〜1 に正規化した進捗をカーブの型に通した値。maxLevel が 1 (上限なし相当) なら常に 1 扱いにする */
+/**
+ * 進捗をカーブの型に通した値。
+ *
+ * 上限のあるキャラは 0〜1 に収まり、t=1 (上限) でどの型も同じ値に揃う。
+ * curveRef を持つキャラ (上限の無い主人公) は 1 を越えても伸び続ける。
+ */
 export function growthFactor(g: Growable): number {
-  const denom = g.maxLevel - 1;
-  const t = denom <= 0 ? 1 : Math.min(1, Math.max(0, (g.level - 1) / denom));
+  const ref = g.curveRef ?? g.maxLevel;
+  const denom = ref - 1;
+  if (denom <= 0) return 1;
+  const raw = Math.max(0, (g.level - 1) / denom);
+  // 基準を持たないキャラは上限で頭打ちにする
+  const t = g.curveRef === undefined ? Math.min(1, raw) : raw;
   return curveShape(g.curve, t);
 }
 

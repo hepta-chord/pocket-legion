@@ -58,8 +58,10 @@ export function makeFoe(depth: number, rng: Rng, elite = false): EnemyDef {
     id: `d${depth}`,
     name: groupSize > 1 ? (elite ? '影の群れ' : '魔物の群れ') : elite ? '影' : '魔物',
     // 深度 2 の単体 (最初に出る雑魚) は、主人公が斬撃を振り続けて 2 ターン、
-    // 必殺なら最低の出目でも一撃で沈む量。深い雑魚は二次で伸びて壁になる
-    maxHp: Math.round((150 + depth * depth * 12) * mul),
+    // 必殺なら一撃で沈む量。深さには一次で伸ばす。
+    // 二次で伸ばすと、こちらの火力 (レベルで約 2 倍、陣営倍率で最大 2 倍) が
+    // まったく追いつかず、中層から先が越えられない壁になる
+    maxHp: Math.round((150 + depth * 80) * mul),
     attack: Math.round((40 + depth * 9) * groupSize * mul),
     defense: depth * 2,
     resist,
@@ -88,9 +90,9 @@ interface BossSpec {
 
 /** 区画ごとのボス。名前と強さは深度帯に合わせて 3 段階で決め打ちする */
 const BOSSES: readonly BossSpec[] = [
-  { name: '穴蜘蛛の女王', maxHp: 2200, attack: 40, defense: 40, bigName: '毒霧の乱舞' },
-  { name: '骨の王', maxHp: 5000, attack: 70, defense: 70, bigName: '亡者の号令' },
-  { name: '深淵の使者', maxHp: 9000, attack: 100, defense: 100, bigName: '深淵からの侵蝕' },
+  { name: '穴蜘蛛の女王', maxHp: 1200, attack: 40, defense: 40, bigName: '毒霧の乱舞' },
+  { name: '骨の王', maxHp: 2900, attack: 70, defense: 70, bigName: '亡者の号令' },
+  { name: '深淵の使者', maxHp: 5200, attack: 100, defense: 100, bigName: '深淵からの侵蝕' },
 ];
 
 /**
@@ -137,6 +139,9 @@ function bossSlots(sectorId: number): ActionSlot[] {
 
 /**
  * 区画ごとのボスを 1 体作る。
+ *
+ * HP は浅層が 10 ターン強、中層・深層が 30〜45 ターンで沈む量に合わせてある。
+ * 深いほど長い消耗戦になるが、雑魚戦 (5〜10 ターン) とは別物の長さを保つ。
  *
  * 50〜100 ターンの消耗戦にするため、通常攻撃は深度なりの雑魚よりずっと軽い。
  * 長期戦で成立する 1 ターンあたりの被害はパーティ HP の予算を戦闘の長さで割った値で、
