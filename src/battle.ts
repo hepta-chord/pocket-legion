@@ -11,15 +11,25 @@ import type { Rng } from './rng';
 import type { LogLineView } from './view';
 
 export const FRONT_SIZE = 6;
-export const MANA_PER_TURN = 3;
+/** マナの払い出しは奇数ターン/偶数ターンで基礎値が違う (2 ターンで 5 の律動) */
+export const MANA_BASE_ODD = 2;
+export const MANA_BASE_EVEN = 3;
 export const MANA_CAP = 10;
-export const GUARD_COST = 1;
-export const GUARD_MAX = 4;
-/** ガードの枚数ごとの軽減率。0 枚は素通し */
-export const GUARD_RATES = [0, 0.25, 0.5, 0.75, 0.9] as const;
+export const DEFENSE_COST = 1;
+export const DEFENSE_MAX = 4;
+/** 防御の枚数ごとの軽減率。0 枚は素通し */
+export const DEFENSE_RATES = [0, 0.2, 0.45, 0.7, 0.9] as const;
 export const SWAP_COOLDOWN = 3;
 /** パーティ最大 HP の、編成に依らない土台 */
 export const PARTY_BASE_HP = 2000;
+
+/** 鼓舞・ガード (ward) スタックの共通の骨格。上限枚数と、1 回の付与ぶんの持続ターン */
+export const BUFF_STACK_MAX = 3;
+export const BUFF_STACK_TURNS = 3;
+/** 鼓舞 1 枚あたりの攻撃倍率への加算 */
+export const CHEER_RATE_PER_STACK = 0.2;
+/** ward 1 枚あたりの被ダメージ軽減率 */
+export const WARD_RATE_PER_STACK = 0.2;
 
 // ---------------------------------------------------------------------------
 // パーティ
@@ -45,6 +55,12 @@ export interface Fighter {
   skills: SkillState[];
   passives: PassiveDef[];
   downed: boolean;
+  /**
+   * スタンで行動不可になっているターン番号の上限。0 は「スタンしていない」。
+   * 掛かったターンと次のターンが行動不可になるよう、掛けた側が state.turn + 1 を書き込む。
+   * 帰還と回復イベントで 0 に戻す (ダウンと同じ扱い)
+   */
+  stunnedUntil: number;
 }
 
 export interface Party {
@@ -83,7 +99,7 @@ export function refillFront(party: Party): void {
 }
 
 /** 前衛のパッシブを合算する。前衛にいる間だけ効く */
-function hookSum(party: Party, key: 'manaPerTurn' | 'guardRate' | 'telegraph'): number {
+function hookSum(party: Party, key: 'manaPerTurn' | 'defenseRate' | 'telegraph'): number {
   let v = 0;
   for (const f of party.front) {
     if (!f) continue;
@@ -92,12 +108,56 @@ function hookSum(party: Party, key: 'manaPerTurn' | 'guardRate' | 'telegraph'): 
   return v;
 }
 
-export function manaPayout(party: Party): number {
-  return Math.max(0, MANA_PER_TURN + hookSum(party, 'manaPerTurn'));
+/**
+ * 毎ターンのマナの払い出し。基礎は奇数ターン 2 / 偶数ターン 3。
+ * bonus (GameState.manaBonus) は成長要素で、奇数ターンの基礎に乗る
+ * (中層クリアで +1 して奇数側が 3 になり、奇偶とも 3/3 になる)
+ */
+export function manaPayout(party: Party, turn: number, bonus: number): number {
+  const base = turn % 2 === 1 ? MANA_BASE_ODD + bonus : MANA_BASE_EVEN;
+  return Math.max(0, base + hookSum(party, 'manaPerTurn'));
+}
+
+// ---------------------------------------------------------------------------
+// バフのスタック (鼓舞・ガード、敵の自己鼓舞・自己防御も同じ骨格を使う)
+
+export interface BuffStack {
+  /** 積んだ枚数。BUFF_STACK_MAX が上限 */
+  stacks: number;
+  /** 残りターン数。重ねがけで BUFF_STACK_TURNS に戻る */
+  turns: number;
+}
+
+function emptyBuffStack(): BuffStack {
+  return { stacks: 0, turns: 0 };
+}
+
+/** 重ねがけ。上限まで積み、残りターンは満タンに戻る */
+function addBuffStack(buff: BuffStack, add: number): void {
+  buff.stacks = Math.min(BUFF_STACK_MAX, buff.stacks + add);
+  buff.turns = BUFF_STACK_TURNS;
+}
+
+/** ターン明けの整理。0 になったら stacks も 0 に戻す */
+function tickBuffStack(buff: BuffStack): void {
+  if (buff.turns <= 0) return;
+  buff.turns -= 1;
+  if (buff.turns <= 0) buff.stacks = 0;
 }
 
 // ---------------------------------------------------------------------------
 // 敵
+
+export type EnemyAction =
+  | { kind: 'attack' }
+  | { kind: 'big' }
+  | { kind: 'downstrike' }
+  /** 巻き込む人数は rng.int(min, max)。区画で変える */
+  | { kind: 'stun'; min: number; max: number }
+  /** 自分を強化する (攻撃力アップ) */
+  | { kind: 'cheer' }
+  /** 自分の被ダメージを下げる */
+  | { kind: 'ward' };
 
 export interface EnemyDef {
   id: string;
@@ -109,23 +169,20 @@ export interface EnemyDef {
   resist: Element | null;
   /** 大技を使う間隔 (ターン) */
   bigEvery: number;
-  /** 大技の威力。通常攻撃に対する倍率 */
+  /** 大技の威力。通常攻撃に対する倍率。大技はダウンを起こさない */
   bigMul: number;
+  /** ダウン攻撃の間隔 (ターン)。null なら持たない。防御・ward では防げず、バリアと身代わりだけが対抗手段 */
+  downEvery: number | null;
   /**
-   * 大技のダウンを防ぐのに要るガードの枚数。
-   * 1 枚で防げてしまうと毎ターンの払い出し (3) で予告を必ず無効化でき、
-   * ダウンも交代も起きなくなる。強い敵ほど多く積ませて、
-   * マナの持ち越しと 4 枚ガードが「予告への回答」として働くようにする。
-   * ボスでしか大技のダウンが起きなくなった今もフィールドとしては維持する
-   * (雑魚の大技はダメージ軽減の計算にだけ使われる)。
+   * 大技・ダウン攻撃以外の「通常行動」の候補。雑魚は毎ターンここから 1 回、
+   * ボスは大技・ダウン攻撃のターン以外は 2 回引く (attack / stun / cheer / ward)
    */
-  guardBreak: number;
+  pattern: EnemyAction[];
   /**
    * 元の頭数。敵は常に 1 体として戦うが、群れの規模は全体攻撃の威力に効かせる
    * (敵の表示にもそのまま出す)。1 なら単体
    */
   groupSize: number;
-  /** ボスだけが大技でダウンを起こす。雑魚の大技はダメージだけ */
   isBoss: boolean;
 }
 
@@ -133,13 +190,18 @@ export interface EnemyState {
   def: EnemyDef;
   hp: number;
   /** 大技まであと何ターンか。予告としてそのまま表示する */
-  countdown: number;
+  bigCountdown: number;
+  /** ダウン攻撃まであと何ターンか。持たない敵は null */
+  downCountdown: number | null;
+  /** 敵の自己鼓舞・自己防御。プレイヤー側の鼓舞・ward と同じ骨格 */
+  cheer: BuffStack;
+  ward: BuffStack;
 }
 
 // ---------------------------------------------------------------------------
 // 戦闘の状態
 
-export type BattleOutcome = 'ongoing' | 'victory' | 'wipe' | 'annihilated';
+export type BattleOutcome = 'ongoing' | 'victory' | 'wipe' | 'annihilated' | 'fled';
 
 export interface BattleState {
   party: Party;
@@ -149,23 +211,29 @@ export interface BattleState {
   /** 敵は常に 1 体。対象選択を無くすための仕様なので単数で持つ */
   enemy: EnemyState;
   mana: number;
-  /** このターンに積んだガードの枚数 */
-  guard: number;
+  /** マナ払い出しの成長ぶん (GameState.manaBonus)。startBattle で渡され、endTurn の payout に乗る */
+  manaBonus: number;
+  /** このターンに積んだ防御の枚数 */
+  defense: number;
   /**
-   * バリア。張ると次に来る敵の攻撃 (通常・大技どちらも) を 1 回まるごと無効化し、
+   * バリア。張ると次に来る敵の攻撃 (通常・大技・ダウン攻撃どれも) を 1 回まるごと無効化し、
    * ダウンも防いで自身は消費される。予告を見てから張る札にするため、
-   * ガードと違ってターン終了では消さずターンをまたいで残す
+   * 防御と違ってターン終了では消さずターンをまたいで残す
    */
   barrier: boolean;
-  /** 支援スキルによるターン中の攻撃倍率への加算 */
-  buff: number;
+  /** 鼓舞スタック。攻撃 +20%/枚、3 枚まで */
+  cheer: BuffStack;
+  /** ward スタック。被ダメージ -20%/枚、3 枚まで。防御とは掛け算で重なる */
+  ward: BuffStack;
   turn: number;
   /**
    * 同一ターン内で攻撃が命中した回数。攻撃の基礎ダメージに (1 + 0.15 * combo) を掛け、
    * 命中のたび 1 増える。回復・支援・バリアは数えず、途切れさせもしない。
-   * ターン終了で 0 に戻る (guard・buff と同じ扱い)
+   * ターン終了で 0 に戻る (defense と同じ扱い)
    */
   combo: number;
+  /** 逃げるの宣言から発動までの残りターン。null は宣言していない */
+  fleeIn: number | null;
   outcome: BattleOutcome;
   log: LogLineView[];
   /** バランス計測用の集計 */
@@ -188,7 +256,7 @@ function addLog(state: BattleState, kind: LogLineView['kind'], text: string): vo
 
 /**
  * battle.log へ 1 行足す、外部 (game.ts) 向けの窓口。
- * 大技 1 ターン前のアナウンスのように、ルールそのものではなく戦況から作る文言を
+ * 大技・ダウン攻撃 1 ターン前のアナウンスのように、ルールそのものではなく戦況から作る文言を
  * endTurn の直後に足したいときに使う。ここでしか battle.log に触れないよう集約しておく
  */
 export function logBattle(state: BattleState, kind: LogLineView['kind'], text: string): void {
@@ -207,7 +275,8 @@ function resetTurnBumps(party: Party): void {
   }
 }
 
-export function startBattle(party: Party, hp: number, maxHp: number, enemyDef: EnemyDef): BattleState {
+/** manaBonus は GameState 側の成長要素。省略時は 0 (テストや素の戦闘生成の既定値) */
+export function startBattle(party: Party, hp: number, maxHp: number, enemyDef: EnemyDef, manaBonus = 0): BattleState {
   party.swapCooldown = 0;
   resetTurnBumps(party);
   const telegraph = hookSum(party, 'telegraph');
@@ -218,20 +287,26 @@ export function startBattle(party: Party, hp: number, maxHp: number, enemyDef: E
     enemy: {
       def: enemyDef,
       hp: enemyDef.maxHp,
-      countdown: Math.max(1, enemyDef.bigEvery + telegraph),
+      bigCountdown: Math.max(1, enemyDef.bigEvery + telegraph),
+      downCountdown: enemyDef.downEvery !== null ? Math.max(1, enemyDef.downEvery + telegraph) : null,
+      cheer: emptyBuffStack(),
+      ward: emptyBuffStack(),
     },
     mana: 0,
-    guard: 0,
+    manaBonus,
+    defense: 0,
     barrier: false,
-    buff: 0,
+    cheer: emptyBuffStack(),
+    ward: emptyBuffStack(),
     turn: 1,
     combo: 0,
+    fleeIn: null,
     outcome: 'ongoing',
     log: [],
     stats: { swaps: 0, downs: 0 },
     left: [],
   };
-  state.mana = Math.min(MANA_CAP, manaPayout(party));
+  state.mana = Math.min(MANA_CAP, manaPayout(party, state.turn, manaBonus));
   return state;
 }
 
@@ -253,11 +328,16 @@ export function effectiveCost(s: SkillState): number {
   return s.def.baseCost + s.turnBump + s.sortieBump;
 }
 
+function isStunned(state: BattleState, f: Fighter): boolean {
+  return f.stunnedUntil > 0 && state.turn <= f.stunnedUntil;
+}
+
 /** 使えないときはその理由を返す。UI がボタンの無効化と表示に使う */
 export function whyCannotUse(state: BattleState, slot: number, skillIndex: number): string | null {
   if (state.outcome !== 'ongoing') return '戦闘は終わっている';
   const f = state.party.front[slot];
   if (!f) return '空きスロット';
+  if (isStunned(state, f)) return '気絶している';
   const s = f.skills[skillIndex];
   if (!s) return 'スキルがない';
   if (s.def.oncePerSortie && s.spent) return 'この出撃ではもう使えない';
@@ -271,11 +351,14 @@ function hitEnemy(state: BattleState, attacker: Fighter, def: ActionSkillDef, en
   if (def.effect.kind !== 'attack') return;
   // コンボはその攻撃の発動時点の値を使う。1 発目は等倍、2 発目 +15%、3 発目 +30% ...
   const comboMul = 1 + 0.15 * state.combo;
-  let base = attacker.attack * def.effect.power * (1 + state.buff) * comboMul;
+  const cheerMul = 1 + CHEER_RATE_PER_STACK * state.cheer.stacks;
+  let base = attacker.attack * def.effect.power * cheerMul * comboMul;
   // 敵は 1 体にまとめて表すが、全体攻撃は元の頭数 (groupSize) ぶん威力が伸びる。
   // でないと「群れに強い」という全体攻撃の性格が消えるため
   if (def.effect.target === 'all') base *= 1 + 0.3 * (enemy.def.groupSize - 1);
   let dmg = Math.round(base * (0.6 + 0.4 * rng.next())) - enemy.def.defense;
+  // 敵の自己防御 (ward)。プレイヤーの防御・ward と同じ「積むほど軽減」の考え方を敵にも適用する
+  dmg = Math.round(dmg * (1 - WARD_RATE_PER_STACK * enemy.ward.stacks));
   const resisted = enemy.def.resist === elementOf(def);
   if (resisted) dmg = Math.round(dmg / 2);
   dmg = Math.max(1, dmg);
@@ -309,7 +392,8 @@ export function useSkill(state: BattleState, slot: number, skillIndex: number, r
   state.mana -= effectiveCost(s);
 
   // 系統ごとのコスト上昇。魔法・必殺は青天井で、ここが出撃を通した消耗の正体になる。
-  // 物理は +1 で頭打ちにして、2 発目からは 1 マナで連打できる主力の手数にする
+  // 物理は +1 で頭打ちにして、2 発目からは 1 マナで連打できる主力の手数にする。
+  // 鼓舞・ガード (ward) も物理と同じ扱い (category: 'physical') にして、出撃を通した消耗はさせない
   if (s.def.category === 'physical') s.turnBump = Math.min(1, s.turnBump + 1);
   else s.sortieBump += 1;
   if (s.def.oncePerSortie) s.spent = true;
@@ -321,12 +405,19 @@ export function useSkill(state: BattleState, slot: number, skillIndex: number, r
     const back = Math.round(state.maxHp * e.power);
     state.hp = Math.min(state.maxHp, state.hp + back);
     addLog(state, 'good', `${f.name} の${s.def.name}。${back} 回復した。`);
-  } else if (e.kind === 'buff') {
-    state.buff += e.power;
-    addLog(state, 'good', `${f.name} の${s.def.name}。攻めが乗った。`);
-  } else {
+  } else if (e.kind === 'cheer') {
+    addBuffStack(state.cheer, e.stacks);
+    addLog(state, 'good', `${f.name} の${s.def.name}。鼓舞が ${state.cheer.stacks} 枚になった。`);
+  } else if (e.kind === 'ward') {
+    addBuffStack(state.ward, e.stacks);
+    addLog(state, 'good', `${f.name} の${s.def.name}。ガードが ${state.ward.stacks} 枚になった。`);
+  } else if (e.kind === 'barrier') {
     state.barrier = true;
     addLog(state, 'good', `${f.name} の${s.def.name}。バリアを張った。`);
+  } else {
+    // stun-self: 将来、味方スキルの代償として使う枠。今回は敵専用の仕組みだが型だけ用意しておく
+    f.stunnedUntil = Math.max(f.stunnedUntil, state.turn + 1);
+    addLog(state, 'warn', `${f.name} の${s.def.name}。代償で気絶した。`);
   }
 
   // selfDown は自分で選んで払う代償なので、身代わりの肩代わり (coverable) は効かせない
@@ -335,18 +426,40 @@ export function useSkill(state: BattleState, slot: number, skillIndex: number, r
   return true;
 }
 
-export function useGuard(state: BattleState): boolean {
+export function useDefense(state: BattleState): boolean {
   if (state.outcome !== 'ongoing') return false;
-  if (state.guard >= GUARD_MAX) return false;
-  if (state.mana < GUARD_COST) return false;
-  state.mana -= GUARD_COST;
-  state.guard += 1;
+  if (state.defense >= DEFENSE_MAX) return false;
+  if (state.mana < DEFENSE_COST) return false;
+  state.mana -= DEFENSE_COST;
+  state.defense += 1;
   return true;
 }
 
-function guardRate(state: BattleState): number {
-  if (state.guard === 0) return 0;
-  return Math.min(0.95, GUARD_RATES[state.guard] + hookSum(state.party, 'guardRate'));
+function defenseRate(state: BattleState): number {
+  if (state.defense === 0) return 0;
+  return Math.min(0.95, DEFENSE_RATES[state.defense] + hookSum(state.party, 'defenseRate'));
+}
+
+function wardRate(state: BattleState): number {
+  return WARD_RATE_PER_STACK * state.ward.stacks;
+}
+
+/** 防御と ward の軽減率は掛け算で重ねる (防御 4 枚 0.1 × ward 3 枚 0.4 = 0.04 で被害 4%) */
+function damageReduction(state: BattleState): number {
+  return (1 - defenseRate(state)) * (1 - wardRate(state));
+}
+
+/** 逃げるの宣言・キャンセルのトグル。マナは要らず、戦闘中いつでも押せる */
+export function toggleFlee(state: BattleState, rng: Rng): boolean {
+  if (state.outcome !== 'ongoing') return false;
+  if (state.fleeIn === null) {
+    state.fleeIn = rng.int(1, 3);
+    addLog(state, 'warn', `離脱を試みる。あと ${state.fleeIn} ターンで抜ける。`);
+  } else {
+    state.fleeIn = null;
+    addLog(state, 'info', '離脱を取りやめた。');
+  }
+  return true;
 }
 
 export interface SwapMove {
@@ -357,6 +470,7 @@ export interface SwapMove {
 /**
  * 手動交代。一度に何人でも入れ替えられるが、実行するとクールタイムがかかる。
  * 下がったキャラはダウン扱いで、空きスロットへの補充にも同じ 1 回を使う。
+ * スタン中のキャラは行動もスキルも選べないのと同じ理由で、交代の対象にも選べない。
  */
 export function swapMembers(state: BattleState, moves: SwapMove[]): boolean {
   const party = state.party;
@@ -370,6 +484,8 @@ export function swapMembers(state: BattleState, moves: SwapMove[]): boolean {
     if (m.slot < 0 || m.slot >= FRONT_SIZE) return false;
     if (slots.has(m.slot) || ids.has(m.reserveId)) return false;
     if (!party.reserve.some((r) => r.id === m.reserveId)) return false;
+    const current = party.front[m.slot];
+    if (current && isStunned(state, current)) return false;
     slots.add(m.slot);
     ids.add(m.reserveId);
   }
@@ -438,48 +554,140 @@ function downSlot(state: BattleState, slot: number, rng: Rng, cause: string, cov
 }
 
 // ---------------------------------------------------------------------------
+// 敵の行動
+
+function occupiedSlots(party: Party): number[] {
+  return party.front.flatMap((f, i) => (f ? [i] : []));
+}
+
+/** 重複無しで n 件抜く (敵のスタンが巻き込む人数を選ぶのに使う) */
+function pickDistinct(pool: readonly number[], n: number, rng: Rng): number[] {
+  const remaining = [...pool];
+  const out: number[] = [];
+  for (let i = 0; i < n && remaining.length > 0; i++) {
+    const idx = rng.int(0, remaining.length - 1);
+    out.push(remaining[idx]);
+    remaining.splice(idx, 1);
+  }
+  return out;
+}
+
+function enemyCheerMul(enemy: EnemyState): number {
+  return 1 + CHEER_RATE_PER_STACK * enemy.cheer.stacks;
+}
+
+/** 大技。防御・ward の軽減は乗るが、ダウンは起こさない (guardBreak は廃止) */
+function doBig(state: BattleState, enemy: EnemyState): void {
+  if (state.barrier) {
+    state.barrier = false;
+    addLog(state, 'good', `バリアが${enemy.def.name}の大技を防いだ。`);
+    return;
+  }
+  const raw = enemy.def.attack * enemy.def.bigMul * enemyCheerMul(enemy);
+  const dmg = Math.max(0, Math.round(raw * damageReduction(state)));
+  state.hp = Math.max(0, state.hp - dmg);
+  addLog(state, 'bad', `${enemy.def.name} の大技。${dmg} 受けた。`);
+}
+
+/** ダウン攻撃。防御・ward では防げず、バリアと身代わりだけが対抗手段 */
+function doDownstrike(state: BattleState, enemy: EnemyState, rng: Rng): void {
+  if (state.barrier) {
+    state.barrier = false;
+    addLog(state, 'good', `バリアが${enemy.def.name}のダウン攻撃を防いだ。`);
+    return;
+  }
+  const raw = enemy.def.attack * enemyCheerMul(enemy) * (0.5 + 0.5 * rng.next());
+  const dmg = Math.max(0, Math.round(raw));
+  state.hp = Math.max(0, state.hp - dmg);
+  addLog(state, 'bad', `${enemy.def.name} のダウン攻撃。${dmg} 受けた。`);
+  const occupied = occupiedSlots(state.party);
+  if (occupied.length > 0) downSlot(state, rng.pick(occupied), rng, 'ダウン攻撃で', true);
+}
+
+/** 大技・ダウン攻撃以外の通常行動。雑魚は 1 回、ボスは 2 回この関数を呼ぶ */
+function doNormalAction(state: BattleState, enemy: EnemyState, rng: Rng): void {
+  const pattern = enemy.def.pattern.length > 0 ? enemy.def.pattern : ([{ kind: 'attack' }] as EnemyAction[]);
+  const action = rng.pick(pattern);
+  switch (action.kind) {
+    case 'attack': {
+      if (state.barrier) {
+        state.barrier = false;
+        addLog(state, 'good', `バリアが${enemy.def.name}の攻撃を防いだ。`);
+        return;
+      }
+      const raw = enemy.def.attack * enemyCheerMul(enemy) * (0.5 + 0.5 * rng.next());
+      const dmg = Math.max(0, Math.round(raw * damageReduction(state)));
+      state.hp = Math.max(0, state.hp - dmg);
+      addLog(state, 'bad', `${enemy.def.name} の攻撃。${dmg} 受けた。`);
+      return;
+    }
+    case 'stun': {
+      const occupied = occupiedSlots(state.party);
+      const count = Math.min(occupied.length, rng.int(action.min, action.max));
+      const targets = pickDistinct(occupied, count, rng);
+      const names: string[] = [];
+      for (const slot of targets) {
+        const f = state.party.front[slot];
+        if (!f) continue;
+        f.stunnedUntil = Math.max(f.stunnedUntil, state.turn + 1);
+        names.push(f.name);
+      }
+      if (names.length > 0) addLog(state, 'warn', `${enemy.def.name} のスタン。${names.join('・')} が気絶した。`);
+      return;
+    }
+    case 'cheer':
+      addBuffStack(enemy.cheer, 1);
+      addLog(state, 'warn', `${enemy.def.name} が自らを鼓舞した。`);
+      return;
+    case 'ward':
+      addBuffStack(enemy.ward, 1);
+      addLog(state, 'warn', `${enemy.def.name} が身を固めた。`);
+      return;
+    case 'big':
+    case 'downstrike':
+      // pattern (通常行動の候補) には入れない値。ここに来ることは無いが型のための保険
+      return;
+  }
+}
+
+/**
+ * 敵の 1 ターンぶんの行動。大技・ダウン攻撃はそれぞれ別のカウントダウンで管理し、
+ * どちらのターンでもなければ「通常行動」を雑魚は 1 回、ボスは 2 回行う
+ * (attack / stun / cheer / ward から抽選)。
+ */
+function resolveEnemyTurn(state: BattleState, enemy: EnemyState, rng: Rng): void {
+  enemy.bigCountdown -= 1;
+  if (enemy.bigCountdown <= 0) {
+    doBig(state, enemy);
+    enemy.bigCountdown = enemy.def.bigEvery;
+    return;
+  }
+
+  if (enemy.downCountdown !== null) {
+    enemy.downCountdown -= 1;
+    if (enemy.downCountdown <= 0) {
+      doDownstrike(state, enemy, rng);
+      enemy.downCountdown = enemy.def.downEvery ?? enemy.def.bigEvery;
+      return;
+    }
+  }
+
+  const times = enemy.def.isBoss ? 2 : 1;
+  for (let i = 0; i < times; i++) {
+    if (state.outcome !== 'ongoing' || state.hp <= 0) break;
+    doNormalAction(state, enemy, rng);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // ターンの終了 (敵の行動と明けの整理)
 
 export function endTurn(state: BattleState, rng: Rng): void {
   if (state.outcome !== 'ongoing') return;
-  const rate = guardRate(state);
   const enemy = state.enemy;
 
   if (enemy.hp > 0) {
-    enemy.countdown -= 1;
-
-    if (enemy.countdown <= 0) {
-      // 大技
-      if (state.barrier) {
-        state.barrier = false;
-        addLog(state, 'good', `バリアが${enemy.def.name}の大技を防いだ。`);
-      } else {
-        // ガードが guardBreak 枚成立していればダウンは防げる (ボスの大技だけ)
-        const raw = enemy.def.attack * enemy.def.bigMul;
-        const dmg = Math.max(0, Math.round(raw * (1 - rate)));
-        state.hp = Math.max(0, state.hp - dmg);
-        addLog(state, 'bad', `${enemy.def.name} の大技。${dmg} 受けた。`);
-        if (enemy.def.isBoss) {
-          if (state.guard >= enemy.def.guardBreak) {
-            addLog(state, 'good', '防御がダウンを防いだ。');
-          } else {
-            const occupied = state.party.front.flatMap((f, i) => (f ? [i] : []));
-            if (occupied.length > 0) downSlot(state, rng.pick(occupied), rng, '大技で', true);
-          }
-        }
-      }
-      enemy.countdown = enemy.def.bigEvery;
-    } else {
-      if (state.barrier) {
-        state.barrier = false;
-        addLog(state, 'good', `バリアが${enemy.def.name}の攻撃を防いだ。`);
-      } else {
-        const raw = Math.round(enemy.def.attack * (0.5 + 0.5 * rng.next()));
-        const dmg = Math.max(0, Math.round(raw * (1 - rate)));
-        state.hp = Math.max(0, state.hp - dmg);
-        addLog(state, 'bad', `${enemy.def.name} の攻撃。${dmg} 受けた。`);
-      }
-    }
+    resolveEnemyTurn(state, enemy, rng);
 
     if (state.hp <= 0) {
       state.outcome = 'wipe';
@@ -489,15 +697,28 @@ export function endTurn(state: BattleState, rng: Rng): void {
     if (state.outcome !== 'ongoing') return;
   }
 
+  // 逃げるの進行。敵の行動が終わったあとに 1 減らす。凌ぎきれば発動して戦闘が終わる
+  if (state.fleeIn !== null) {
+    state.fleeIn -= 1;
+    if (state.fleeIn <= 0) {
+      state.outcome = 'fled';
+      addLog(state, 'info', '戦線を離脱した。');
+      return;
+    }
+  }
+
   // ターン明けの整理。バリアは予告を見てから張る札にするため、ここでは消さない
   state.turn += 1;
-  state.guard = 0;
-  state.buff = 0;
+  state.defense = 0;
   state.combo = 0;
+  tickBuffStack(state.cheer);
+  tickBuffStack(state.ward);
+  tickBuffStack(enemy.cheer);
+  tickBuffStack(enemy.ward);
   for (const f of [...state.party.front, ...state.party.reserve]) {
     if (!f) continue;
     for (const s of f.skills) s.turnBump = 0;
   }
   state.party.swapCooldown = Math.max(0, state.party.swapCooldown - 1);
-  state.mana = Math.min(MANA_CAP, state.mana + manaPayout(state.party));
+  state.mana = Math.min(MANA_CAP, state.mana + manaPayout(state.party, state.turn, state.manaBonus));
 }

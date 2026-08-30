@@ -16,14 +16,23 @@ export type SkillEffect =
   | { kind: 'attack'; target: 'one' | 'all'; power: number }
   /** power は最大 HP に対する割合 */
   | { kind: 'heal'; power: number }
-  /** power はターン中の攻撃倍率への加算 */
-  | { kind: 'buff'; power: number }
+  /** 鼓舞。攻撃 +20%/枚。stacks は 1 度に積む枚数 (コモンは 1、レアの上位は 2) */
+  | { kind: 'cheer'; stacks: number }
+  /** ward。被ダメージ -20%/枚。stacks は 1 度に積む枚数 (コモンは 1、レアの上位は 2) */
+  | { kind: 'ward'; stacks: number }
   /** 次に来る敵の攻撃を 1 回無効化する。ダウンも防ぐ */
-  | { kind: 'barrier' };
+  | { kind: 'barrier' }
+  /**
+   * 発動すると自分がその場でスタンする。今回これを持つ味方スキルは無いが、
+   * 将来「自分や味方をスタンさせる代償」を持つスキルを作れるよう型だけ用意しておく
+   */
+  | { kind: 'stun-self' };
 
 export interface ActionSkillDef {
   id: string;
   name: string;
+  /** キャラスロットのボタンに出す短縮名 (3〜4 文字程度、折り返さない前提)。詳細やログは name を使う */
+  shortName: string;
   category: SkillCategory;
   baseCost: number;
   effect: SkillEffect;
@@ -49,8 +58,8 @@ export interface PassiveDef {
   hooks: {
     /** 毎ターンのマナ払い出しへの加算。負ならデメリット */
     manaPerTurn?: number;
-    /** ガード軽減率への加算。合計は 0.95 で頭打ち。負ならデメリット */
-    guardRate?: number;
+    /** 防御軽減率への加算。合計は 0.95 で頭打ち。負ならデメリット */
+    defenseRate?: number;
     /** 敵の大技の予告を延ばすターン数。戦闘開始時に 1 度だけ効く。負ならデメリット */
     telegraph?: number;
     /** ボスの大技のダウンを、前衛にいる限り自動で肩代わりする (先頭の 1 人だけ) */

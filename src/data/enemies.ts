@@ -5,18 +5,38 @@
 // 浅い深度では瞬殺できる。深くなるほど HP が二次で伸びて、
 // 「まだ farm できる深さ」と「削られ始める深さ」の縁が生まれる。
 
-import type { EnemyDef } from '../battle';
+import type { EnemyAction, EnemyDef } from '../battle';
 import type { Rng } from '../rng';
 import type { Element } from './skills';
 
-/** 通常戦・強敵の雑魚を深度なりに生成する。elite なら HP と攻撃力を 1.5 倍にする */
-export function makeFoe(depth: number, rng: Rng, elite = false): EnemyDef {
+/** スタンが巻き込む人数の幅。区画 (浅層/中層/深層) で変える */
+function stunRange(sectorId: number): { min: number; max: number } {
+  if (sectorId <= 1) return { min: 1, max: 2 };
+  if (sectorId === 2) return { min: 1, max: 3 };
+  return { min: 2, max: 4 };
+}
+
+/**
+ * 通常戦・強敵の雑魚を深度なりに生成する。elite なら HP と攻撃力を 1.5 倍にする。
+ * sectorId はスタンの巻き込み人数の幅にだけ使う (浅層/中層/深層で変える)。
+ *
+ * ダウン攻撃・スタンは雑魚の一部だけが持つ (docs/plan.md「敵の行動と予告」)。
+ * 2 割程度にダウン攻撃、別の 2 割程度にスタンを持たせ、両方持つ個体は作らない
+ * (どちらも持たない大半は、大技以外はただ殴るだけの雑魚になる)
+ */
+export function makeFoe(depth: number, rng: Rng, elite = false, sectorId = 1): EnemyDef {
   const groupSize = rng.int(1, Math.min(3, 1 + Math.floor(depth / 5)));
   const mul = elite ? 1.5 : 1;
   // 耐性なしが主で、持ちが出たら苦戦する回にする。
   // 主力が物理の世界なので、物理耐性のほうがきつい壁として多めに出る
   const resistRoll = rng.next();
   const resist: Element | null = resistRoll < 0.08 ? 'physical' : resistRoll < 0.12 ? 'magic' : null;
+
+  const specialRoll = rng.next();
+  const hasDownstrike = specialRoll < 0.2;
+  const hasStun = !hasDownstrike && specialRoll < 0.4;
+  const pattern: EnemyAction[] = hasStun ? [{ kind: 'attack' }, { kind: 'stun', ...stunRange(sectorId) }] : [{ kind: 'attack' }];
+
   return {
     id: `d${depth}`,
     name: groupSize > 1 ? (elite ? '影の群れ' : '魔物の群れ') : elite ? '影' : '魔物',
@@ -30,7 +50,8 @@ export function makeFoe(depth: number, rng: Rng, elite = false): EnemyDef {
     isBoss: false,
     bigEvery: rng.int(3, 4),
     bigMul: 2.2,
-    guardBreak: Math.min(4, rng.int(2, 4) + Math.floor(depth / 12) + (elite ? 1 : 0)),
+    downEvery: hasDownstrike ? rng.int(4, 6) : null,
+    pattern,
   };
 }
 
@@ -39,16 +60,17 @@ interface BossSpec {
   maxHp: number;
   attack: number;
   defense: number;
-  /** ダウンを防ぐのに要るガードの枚数 */
-  guardBreak: number;
 }
 
 /** 区画ごとのボス。名前と強さは深度帯に合わせて 3 段階で決め打ちする */
 const BOSSES: readonly BossSpec[] = [
-  { name: '穴蜘蛛の女王', maxHp: 2200, attack: 40, defense: 40, guardBreak: 3 },
-  { name: '骨の王', maxHp: 5000, attack: 70, defense: 70, guardBreak: 4 },
-  { name: '深淵の使者', maxHp: 9000, attack: 100, defense: 100, guardBreak: 4 },
+  { name: '穴蜘蛛の女王', maxHp: 2200, attack: 40, defense: 40 },
+  { name: '骨の王', maxHp: 5000, attack: 70, defense: 70 },
+  { name: '深淵の使者', maxHp: 9000, attack: 100, defense: 100 },
 ];
+
+/** ボスのダウン攻撃の間隔 (ターン)。「5 ターンごとに 1 人程度」の目安 */
+const BOSS_DOWN_EVERY = 5;
 
 /**
  * 区画ごとのボスを 1 体作る。
@@ -56,12 +78,16 @@ const BOSSES: readonly BossSpec[] = [
  * 50〜100 ターンの消耗戦にするため、通常攻撃は深度なりの雑魚よりずっと軽い。
  * 長期戦で成立する 1 ターンあたりの被害はパーティ HP の予算を戦闘の長さで割った値で、
  * どうしても小さくなるため。
- * 脅威は大技に寄せてあり (bigMul 6.0)、答えなければ HP もダウンも持っていかれる。
+ * 脅威は大技とダウン攻撃に寄せてあり (bigMul 6.0)、答えなければ HP もダウンも持っていかれる。
  * ボスが怖いのは殴られ続けるからではなく、予告に毎回答えを出し続けるからにする。
+ *
+ * ボスは全員が大技・ダウン攻撃・スタン・自己鼓舞・自己防御を持ち、
+ * どちらの特殊行動のターンでもなければ通常行動 (attack/stun/cheer/ward) を 2 回行う。
  */
 export function makeBoss(sectorId: number, rng: Rng): EnemyDef {
   const spec = BOSSES[Math.min(sectorId, BOSSES.length) - 1] ?? BOSSES[BOSSES.length - 1];
   const resist: Element = rng.chance(0.5) ? 'physical' : 'magic';
+  const pattern: EnemyAction[] = [{ kind: 'attack' }, { kind: 'stun', ...stunRange(sectorId) }, { kind: 'cheer' }, { kind: 'ward' }];
   return {
     id: `boss-${sectorId}`,
     name: spec.name,
@@ -73,6 +99,7 @@ export function makeBoss(sectorId: number, rng: Rng): EnemyDef {
     isBoss: true,
     bigEvery: 3,
     bigMul: 6.0,
-    guardBreak: spec.guardBreak,
+    downEvery: BOSS_DOWN_EVERY,
+    pattern,
   };
 }
