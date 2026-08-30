@@ -79,7 +79,7 @@ describe('addToDeck', () => {
     const run = startRun(1, OWNED, AUTO);
     const before = run.maxHp;
     const entry = generateCommon('kingdom', new Rng(1), 1);
-    addToDeck(run, entry);
+    addToDeck(run, entry, [...OWNED, entry]);
     expect(run.party.front.some((f) => f?.id === entry.id)).toBe(true);
     expect(run.maxHp).toBeGreaterThan(before);
   });

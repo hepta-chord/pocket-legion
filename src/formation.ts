@@ -10,7 +10,8 @@
 // 呼び出し側が渡す owned の中から探す形にして、生成コモンも同じ経路で Fighter に変換できるようにする
 
 import { buildFighter, type CharacterEntry } from './data/characters';
-import { FRONT_SIZE, type Fighter, type Party } from './battle';
+import { FRONT_SIZE, recalcVanguardBonus, type Fighter, type Party } from './battle';
+import { factionMultiplierOf, factionTotals } from './roster';
 
 export const FRONT_SLOTS = FRONT_SIZE;
 
@@ -75,10 +76,13 @@ export function partyFromRosterAndFormation(
   formation: readonly (string | null)[],
   touched?: boolean,
 ): Party {
+  // 所持ベースの陣営倍率 (roster.ts) は出撃時に一度だけ確定させ、Fighter.attack/vitality に焼き込む。
+  // 陣営ごとの合算を先に出しておき、entry ごとに自分のぶんを引く形にして全走査を 1 回に抑える
+  const totals = factionTotals(owned);
   const byId = new Map(owned.map((entry) => [entry.id, entry] as const));
   const fighterOf = (id: string): Fighter | null => {
     const entry = byId.get(id);
-    return entry ? buildFighter(entry) : null;
+    return entry ? buildFighter(entry, factionMultiplierOf(totals, entry)) : null;
   };
 
   const ids = owned.map((entry) => entry.id);
@@ -89,7 +93,10 @@ export function partyFromRosterAndFormation(
     .filter((id) => !frontIds.has(id))
     .map(fighterOf)
     .filter((f): f is Fighter => f !== null);
-  return { front, reserve, swapCooldown: 0 };
+  const party: Party = { front, reserve, swapCooldown: 0 };
+  // 前衛の同陣営補正 (battle.ts) は陣営倍率とは別物で、前衛の顔ぶれが決まった直後に確定させる
+  recalcVanguardBonus(party);
+  return party;
 }
 
 // ---------------------------------------------------------------------------
@@ -112,6 +119,8 @@ export function setFrontMember(party: Party, slot: number, id: string | null): v
   if (id === null) {
     party.front[slot] = null;
     if (current) party.reserve.push(current);
+    // 前衛の顔ぶれが変わったので同陣営補正 (battle.ts) を出し直す
+    recalcVanguardBonus(party);
     return;
   }
 
@@ -120,6 +129,7 @@ export function setFrontMember(party: Party, slot: number, id: string | null): v
     const incoming = party.front[frontIdx];
     party.front[frontIdx] = current;
     party.front[slot] = incoming;
+    recalcVanguardBonus(party);
     return;
   }
 
@@ -128,4 +138,5 @@ export function setFrontMember(party: Party, slot: number, id: string | null): v
   const incoming = party.reserve.splice(reserveIdx, 1)[0];
   party.front[slot] = incoming;
   if (current) party.reserve.push(current);
+  recalcVanguardBonus(party);
 }
