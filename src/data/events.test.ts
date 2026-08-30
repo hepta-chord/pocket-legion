@@ -23,19 +23,24 @@ describe('EVENTS の構成', () => {
     }
   });
 
-  it('祠・落石・休息は alwaysAlt を持ち、常に二択の文言が揃っている', () => {
-    for (const kind of ['shrine', 'rockfall', 'rest'] as const) {
+  it('祠・落石・休息・隊商は alwaysAlt を持ち、常に二択の文言が揃っている', () => {
+    for (const kind of ['shrine', 'rockfall', 'rest', 'caravan'] as const) {
       const def = EVENTS.find((e) => e.kind === kind)!;
       expect(def.alwaysAlt).toBe(true);
       expect(def.altAction).toBeTruthy();
     }
   });
 
-  it('隊商・死体は alwaysAlt を持たない (隊商は二択自体を持たず、死体は罠を隠す側)', () => {
-    for (const kind of ['caravan', 'corpse'] as const) {
-      const def = EVENTS.find((e) => e.kind === kind)!;
-      expect(def.alwaysAlt).toBeUndefined();
-    }
+  it('隊商は「買う」「襲う」の二択を持つ', () => {
+    const caravan = EVENTS.find((e) => e.kind === 'caravan')!;
+    expect(caravan.action).toBe('買う');
+    expect(caravan.altAction).toBe('襲う');
+  });
+
+  it('死体は alwaysAlt を持たない (単独のイベントで、中身に罠を隠す側)', () => {
+    const corpse = EVENTS.find((e) => e.kind === 'corpse')!;
+    expect(corpse.alwaysAlt).toBeUndefined();
+    expect(corpse.altAction).toBeUndefined();
   });
 });
 
@@ -77,9 +82,9 @@ describe('decideOccurrence (二択が実際に出る確率)', () => {
     expect(rate).toBeLessThan(ALT_CHANCE + 0.05);
   });
 
-  it('祠・落石・休息 (alwaysAlt) は ALT_CHANCE の抽選を経ず、常に二択のまま返す', () => {
+  it('祠・落石・休息・隊商 (alwaysAlt) は ALT_CHANCE の抽選を経ず、常に二択のまま返す', () => {
     const rng = new Rng(1);
-    for (const kind of ['shrine', 'rockfall', 'rest'] as const) {
+    for (const kind of ['shrine', 'rockfall', 'rest', 'caravan'] as const) {
       const def = EVENTS.find((e) => e.kind === kind)!;
       for (let i = 0; i < 200; i++) {
         expect(decideOccurrence(def, rng).altAction).toBe(def.altAction);

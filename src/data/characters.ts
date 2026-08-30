@@ -5,9 +5,10 @@
 // 2 コスト強攻撃のどちらかで戦う。前衛の大半は物理スキルの手数で戦い、
 // 魔法と必殺は一撃が明確に強い代わりに使うたび出撃を通してコストが上がる
 // 「切りどころを選ぶ札」になる。
-// (例外: カクサンはレア扱いだが、バフ剥がしとガードだけを持つ純粋な支援・壁役で、
-// 攻撃スキルそのものを持たない。0 コスト攻撃の有無ではなく「所持から外れない」ことが
-// レア扱いの理由なので、この例外は成立する)
+// (例外: カクサンとスケサンはレア扱いだが、0 コスト通常攻撃を持たない。
+// カクサンはバフ剥がしとガードだけの純粋な支援・壁役、スケサンは 1 コストの攻撃魔法と
+// ヒーリングを持つ希少な魔法使い。0 コスト攻撃の有無ではなく「初期から所持し、所持から
+// 外れない」ことがレア扱いの理由なので、この 2 人の例外は成立する)
 //
 // コモンはここに名簿を持たない (data/common-gen.ts でその場ごとに生成する)。
 // ここに残るのは固定で定義するキャラ: 初期の 3 人 (主人公コーモン・相棒スケサンとカクサン) と、
@@ -33,14 +34,19 @@ const zeroAttack = (id: string, name = '斬撃', shortName = '斬撃'): ActionSk
   effect: { kind: 'attack', target: 'one', power: 1.0 },
 });
 
-/** 鼓舞を一度に 2 枚積む。レアの支援役が持つ上位版 */
-const cheer2: ActionSkillDef = {
-  id: 'cheer2',
-  name: '大鼓舞',
-  shortName: '大鼓舞',
+/**
+ * マナを増やすアクションスキル。常時 +1 するパッシブ「泉脈」は払い出しの律動
+ * (奇数 2 / 偶数 3) を崩すので廃止し、代わりに 1 マナ払って 2 マナ得る (差し引き +1) の
+ * アクションにする。使うターンを選ばせるのが狙いなので、物理と同じ「ターン内 +1 で頭打ち」
+ * の消耗にして、出撃を通した消耗はさせない (docs/plan.md「スキルスロット」)。レアだけが持つ
+ */
+const manaGift: ActionSkillDef = {
+  id: 'mana-gift',
+  name: '魔力譲渡',
+  shortName: '魔力譲渡',
   category: 'physical',
-  baseCost: 2,
-  effect: { kind: 'cheer', stacks: 2 },
+  baseCost: 1,
+  effect: { kind: 'mana', amount: 2 },
 };
 
 /** ward を一度に 2 枚積む。レアの壁役が持つ上位版 */
@@ -222,15 +228,18 @@ export const CHARACTERS: readonly CharacterEntry[] = [
     id: 'mate',
     name: 'スケサン',
     faction: 'order',
-    rarity: 'common',
+    // 攻撃魔法とヒーリングを併せ持つ、教団の顔にふさわしい構成なのでレア扱いにする
+    // (docs/plan.md「初期の 3 人」)。スキルと数値そのものは変えない
+    rarity: 'rare',
     baseAttack: 90,
     baseVitality: 60,
     skills: [mateBolt, mateHeal],
     passives: [],
     level: 1,
     exp: 0,
-    maxLevel: 22,
-    growth: 0.6,
+    // レアの帯 (growth 1.0〜1.5 / maxLevel 30〜40) に収める
+    maxLevel: 30,
+    growth: 1.0,
     // 早熟型。安いヒーリングで序盤から支える相棒の役回りに合わせる
     curve: 'early',
   },
@@ -259,7 +268,8 @@ export const CHARACTERS: readonly CharacterEntry[] = [
   // コモンはこの題材から抽選で引く (common-gen.ts NAME_POOLS) ので、レアの名前は
   // その候補群と重ならないものを選んである
   // (王国 = 天気の英語、教団 = 果物のイタリア語、傭兵団 = 酒、辺境 = 山の日本語)。
-  // スキル構成とパラメータは分岐前のまま変えていない
+  // マナを増やすアクション (魔力譲渡) はレアだけが持つ枠なので、r2 (アボカド) に持たせてある。
+  // それ以外のスキル構成とパラメータは分岐前のまま変えていない
   {
     id: 'r1',
     // テンペスト (tempest, 大嵐)。NAME_POOLS.kingdom (レイン/サンダー/ストームなど) と重複しない
@@ -285,14 +295,16 @@ export const CHARACTERS: readonly CharacterEntry[] = [
     rarity: 'rare',
     baseAttack: 130,
     baseVitality: 50,
-    // 教団 (回復・支援) の顔として、レアの支援役 = 鼓舞 2 枚積みを持たせる
-    skills: [zeroAttack('r2-slash', '一閃', '一閃'), cheer2],
+    // 教団 (回復・支援) の顔として、マナを増やすアクション (魔力譲渡) を持たせる。
+    // レアだけが持つ枠なので、教団の中でも希少な支援役として立たせる
+    skills: [zeroAttack('r2-slash', '一閃', '一閃'), manaGift],
     passives: [],
     source: 'dungeon',
     level: 1,
     exp: 0,
     maxLevel: 34,
-    growth: 0.9,
+    // レアの帯 (growth 1.0〜1.5) の下限に収まるよう 0.9 → 1.0 に上げる (数値は帯合わせのみ)
+    growth: 1.0,
     curve: 'early',
   },
   {

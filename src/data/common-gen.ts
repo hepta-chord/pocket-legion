@@ -109,7 +109,9 @@ const barrier: ActionSkillDef = {
   effect: { kind: 'barrier' },
 };
 
-const spring: PassiveDef = { id: 'spring', name: '泉脈', hooks: { manaPerTurn: 1 } };
+// パッシブ「泉脈」(マナ払い出し +1) は廃止した。常時効くと払い出しの律動 (奇数 2 / 偶数 3) が
+// 崩れるため、マナを増やす効果はアクションスキル (data/characters.ts の魔力譲渡、レア専用) に
+// 移した (docs/plan.md「スキルスロット」)
 const wall: PassiveDef = { id: 'wall', name: '盾構え', hooks: { defenseRate: 0.1 } };
 const scout: PassiveDef = { id: 'scout', name: '斥候', hooks: { telegraph: 1 } };
 const bodyguard: PassiveDef = { id: 'bodyguard', name: '身代わり', hooks: { cover: true } };
@@ -145,11 +147,10 @@ export const SKILL_POOLS: Record<Faction, FactionPool> = {
     slot1: [commonAtk, heavyAtk, sweep],
     slot2: [skill(cheer1), skill(ward1), skill(heavyAtk), passive(scout)],
   },
-  // 教団: 回復・支援。希少な魔法 (光弾) の入口をここに置き、2 枠目は祈り・守りの膜・
-  // 支援・壁・泉脈を揃える
+  // 教団: 回復・支援。希少な魔法 (光弾) の入口をここに置き、2 枠目は祈り・守りの膜・支援・壁を揃える
   order: {
     slot1: [holyBolt, commonAtk],
-    slot2: [skill(pray), skill(barrier), skill(cheer1), skill(ward1), passive(spring)],
+    slot2: [skill(pray), skill(barrier), skill(cheer1), skill(ward1)],
   },
   // 傭兵団: ガード・体力・身代わり。2 枠目に身代わりパッシブを置く
   mercs: {
@@ -212,7 +213,6 @@ function archetypeOf(candidate: SecondSlotCandidate): Archetype {
     case 'wall':
     case 'bodyguard':
       return 'wall';
-    case 'spring':
     case 'scout':
       return 'support';
     default:
@@ -230,9 +230,10 @@ const BASE_STATS: Record<Archetype, { attack: number; vitality: number }> = {
 /** コモンのレベル上限の幅。16〜24 を目安にする (docs/batch-growth.md 補足) */
 const COMMON_MAX_LEVEL_MIN = 16;
 const COMMON_MAX_LEVEL_MAX = 24;
-/** コモンの成長補正値の幅。上限到達時に base の 1.5〜1.9 倍あたりまで伸びる */
+/** コモンの成長補正値の幅。レア (1.0〜1.5) より低い帯にして、早く仕上がるが頭打ちも早い
+ * コモンの性格を表す (docs/plan.md「成長カーブ」)。上限到達時に base の 1.5〜1.8 倍まで伸びる */
 const COMMON_GROWTH_MIN = 0.5;
-const COMMON_GROWTH_MAX = 0.9;
+const COMMON_GROWTH_MAX = 0.8;
 const CURVES: readonly Curve[] = ['linear', 'early', 'late'];
 
 /**

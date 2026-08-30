@@ -148,6 +148,16 @@ const STUN_SELF: ActionSkillDef = {
 
 const COVER: PassiveDef = { id: 'cover', name: '身代わり', hooks: { cover: true } };
 
+/** 魔力譲渡 (レア専用)。1 マナ払って 2 マナ得る (差し引き +1) */
+const MANA_GIFT: ActionSkillDef = {
+  id: 'mana-gift',
+  name: '魔力譲渡',
+  shortName: '魔力譲渡',
+  category: 'physical',
+  baseCost: 1,
+  effect: { kind: 'mana', amount: 2 },
+};
+
 function fighter(id: string, faction: Faction = 'kingdom', skills: ActionSkillDef[] = [SLASH], passives: PassiveDef[] = []): Fighter {
   return {
     id,
@@ -423,6 +433,36 @@ describe('鼓舞・ガード (ward) のスタック', () => {
     const lost = 100000 - state.hp;
     // 防御 0.9 (10%残る) × ward 0.6 (40%残る) = 4%残る -> 1000 の 4% = 40
     expect(lost).toBe(40);
+  });
+});
+
+describe('マナを増やすスキル (魔力譲渡、レア専用)', () => {
+  it('コスト 1 を払ってマナを 2 増やす (差し引き +1)', () => {
+    const state = battleOf([fighter('a', 'order', [MANA_GIFT])]);
+    state.mana = 5;
+    const rng = new Rng(1);
+    useSkill(state, 0, 0, rng);
+    expect(state.mana).toBe(5 - 1 + 2);
+  });
+
+  it('MANA_CAP を超えては増えない', () => {
+    const state = battleOf([fighter('a', 'order', [MANA_GIFT])]);
+    state.mana = MANA_CAP;
+    const rng = new Rng(1);
+    useSkill(state, 0, 0, rng); // コスト 1 を払って 9、+2 で 11 になるはずが上限 10 で頭打ち
+    expect(state.mana).toBe(MANA_CAP);
+  });
+
+  it('物理と同じ扱いなので、ターン内 2 回目からはコストが +1 上がる (出撃を通した消耗はしない)', () => {
+    const state = battleOf([fighter('a', 'order', [MANA_GIFT])]);
+    state.mana = 10;
+    const skill = state.party.front[0]!.skills[0];
+    expect(effectiveCost(skill)).toBe(1);
+    const rng = new Rng(1);
+    useSkill(state, 0, 0, rng);
+    expect(effectiveCost(skill)).toBe(2);
+    endTurn(state, rng);
+    expect(effectiveCost(skill)).toBe(1);
   });
 });
 
