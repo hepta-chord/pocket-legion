@@ -14,6 +14,29 @@ describe('EVENTS の構成', () => {
     expect(treasure.action).toBe('開ける');
     expect(treasure.altAction).toBe('見送る');
   });
+
+  it('新設 5 種 (隊商・祠・落石・死体・休息) が weight 8 で入っている', () => {
+    for (const kind of ['caravan', 'shrine', 'rockfall', 'corpse', 'rest'] as const) {
+      const def = EVENTS.find((e) => e.kind === kind);
+      expect(def).toBeDefined();
+      expect(def!.weight).toBe(8);
+    }
+  });
+
+  it('祠・落石・休息は alwaysAlt を持ち、常に二択の文言が揃っている', () => {
+    for (const kind of ['shrine', 'rockfall', 'rest'] as const) {
+      const def = EVENTS.find((e) => e.kind === kind)!;
+      expect(def.alwaysAlt).toBe(true);
+      expect(def.altAction).toBeTruthy();
+    }
+  });
+
+  it('隊商・死体は alwaysAlt を持たない (隊商は二択自体を持たず、死体は罠を隠す側)', () => {
+    for (const kind of ['caravan', 'corpse'] as const) {
+      const def = EVENTS.find((e) => e.kind === kind)!;
+      expect(def.alwaysAlt).toBeUndefined();
+    }
+  });
 });
 
 describe('pickEvent', () => {
@@ -52,6 +75,16 @@ describe('decideOccurrence (二択が実際に出る確率)', () => {
     // 統計テストなので幅を持たせる (期待値 ALT_CHANCE=0.2 の ±0.05)
     expect(rate).toBeGreaterThan(ALT_CHANCE - 0.05);
     expect(rate).toBeLessThan(ALT_CHANCE + 0.05);
+  });
+
+  it('祠・落石・休息 (alwaysAlt) は ALT_CHANCE の抽選を経ず、常に二択のまま返す', () => {
+    const rng = new Rng(1);
+    for (const kind of ['shrine', 'rockfall', 'rest'] as const) {
+      const def = EVENTS.find((e) => e.kind === kind)!;
+      for (let i = 0; i < 200; i++) {
+        expect(decideOccurrence(def, rng).altAction).toBe(def.altAction);
+      }
+    }
   });
 
   it('元の EVENTS の要素は書き換えない (occurrence は新しいオブジェクト)', () => {

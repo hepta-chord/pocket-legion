@@ -241,18 +241,26 @@ button:active:not(:disabled) {
   color: var(--bad);
 }
 
-.event-icon-treasure {
+.event-icon-treasure,
+.event-icon-corpse,
+.event-icon-caravan {
   color: var(--warn);
 }
 
 .event-icon-spring,
 .event-icon-boss-alt,
-.event-icon-recruit {
+.event-icon-recruit,
+.event-icon-shrine,
+.event-icon-rest {
   color: var(--good);
 }
 
 .event-icon-nothing {
   color: var(--dim);
+}
+
+.event-icon-rockfall {
+  color: var(--bad);
 }
 
 .event-icon-boss {

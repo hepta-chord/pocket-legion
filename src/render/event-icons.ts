@@ -19,6 +19,16 @@ const ALLY = ['  .-.  ', ' (o.o) ', '  /|\\  ', '  / \\  ', '  仲間  '];
 
 const BOSS = [' .:*:. ', '(o   o)', ' \\ - / ', ' /|_|\\ ', '  ボス  '];
 
+const CARAVAN = ['  ___  ', ' /___\\ ', '|o___o|', ' O   O ', '  隊商  '];
+
+const SHRINE = [' _____ ', '|     |', '| [ ] |', '|_____|', '  祈る  '];
+
+const ROCKFALL = [' *   * ', '  * *  ', ' [###] ', '=======', '  落石  '];
+
+const CORPSE = ['  ___  ', ' (x x) ', '  \\_/  ', ' /   \\ ', '  死体  '];
+
+const REST = ['   ^   ', '  /|\\  ', ' (   ) ', '~~~~~~~', '  休息  '];
+
 const NAMED: Record<string, readonly string[]> = {
   battle: ENEMY,
   elite: ENEMY,
@@ -27,6 +37,11 @@ const NAMED: Record<string, readonly string[]> = {
   'boss-alt': HEAL,
   nothing: NOTHING,
   recruit: ALLY,
+  caravan: CARAVAN,
+  shrine: SHRINE,
+  rockfall: ROCKFALL,
+  corpse: CORPSE,
+  rest: REST,
   boss: BOSS,
 };
 

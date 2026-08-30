@@ -119,7 +119,20 @@ export interface TownView {
  * 解決前に見えるこの kind には現れない)
  */
 interface DungeonEventView {
-  kind: 'battle' | 'elite' | 'treasure' | 'spring' | 'nothing' | 'recruit' | 'boss-alt' | 'boss';
+  kind:
+    | 'battle'
+    | 'elite'
+    | 'treasure'
+    | 'spring'
+    | 'nothing'
+    | 'recruit'
+    | 'caravan'
+    | 'shrine'
+    | 'rockfall'
+    | 'corpse'
+    | 'rest'
+    | 'boss-alt'
+    | 'boss';
   title: string;
   body: string;
   action: string;
