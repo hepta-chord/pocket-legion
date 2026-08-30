@@ -273,13 +273,14 @@ const ward2: ActionSkillDef = {
   effect: { kind: 'ward', stacks: 2 },
 };
 
+// 必殺の倍率は印籠 (3.0) を頂点に、その下に並べる (docs/plan.md「スキル配分の指針」)
 const lastStand: ActionSkillDef = {
   id: 'last-stand',
   name: '捨て身',
   shortName: '捨身',
   category: 'ultimate',
   baseCost: 2,
-  effect: { kind: 'attack', target: 'one', power: 3.0 },
+  effect: { kind: 'attack', target: 'one', power: 2.8 },
   selfDown: true,
 };
 
@@ -288,9 +289,8 @@ const greatBlade: ActionSkillDef = {
   name: '大剣',
   shortName: '大剣',
   category: 'ultimate',
-  baseCost: 4,
-  effect: { kind: 'attack', target: 'one', power: 3.5 },
-  element: 'physical',
+  baseCost: 3,
+  effect: { kind: 'attack', target: 'one', power: 2.9 },
 };
 
 /**
