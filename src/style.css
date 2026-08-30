@@ -81,6 +81,42 @@ button:active:not(:disabled) {
   color: var(--fg);
 }
 
+/* HP バー (パーティ・敵の共通部品)。数値は併記し、バーは補助として添える */
+.hp-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.hp-track {
+  display: inline-block;
+  width: 64px;
+  height: 7px;
+  border-radius: 4px;
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.hp-fill {
+  display: block;
+  height: 100%;
+  background: var(--good);
+}
+
+.hp-group.enemy .hp-track {
+  width: 110px;
+}
+
+.hp-group.enemy .hp-fill {
+  background: var(--bad);
+}
+
+/* マナの丸表示。塗り丸 (現在値) と空丸 (上限まで) を並べるだけの文字列なので装飾は最小限 */
+.mana-dots {
+  letter-spacing: 1px;
+}
+
 /* ステージ。flex: 1 で残り全部を取り、縦が足りなければここが潰れる。
    min-height: 0 が無いと flex item は内容ぶんの高さを主張してスクロールの原因になる */
 #stage {
@@ -111,8 +147,9 @@ button:active:not(:disabled) {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  /* 上は enemy-info (名前・HP) の分、左右は状態アイコン列の分を空ける */
-  padding: 34px 34px 6px;
+  /* 上は enemy-info (名前・HP バー) の分だけ空ける。
+     状態アイコンは横一列にして敵画像に被せるので、左右の余白は最小限でよい */
+  padding: 40px 8px 6px;
   overflow: hidden;
 }
 
@@ -136,14 +173,19 @@ button:active:not(:disabled) {
 .enemy-info {
   position: absolute;
   top: 6px;
-  left: 34px;
-  right: 34px;
+  left: 8px;
+  right: 8px;
   text-align: center;
   font-size: 12px;
 }
 
 .enemy-name {
   font-size: 14px;
+}
+
+.enemy-hp-wrap {
+  display: flex;
+  justify-content: center;
 }
 
 .enemy-hp,
@@ -197,25 +239,25 @@ button:active:not(:disabled) {
   font-size: 12px;
 }
 
-/* 左右の状態アイコン列。ステージに重ねる */
+/* 状態アイコンの横一列。ステージに重ねる (敵画像に被ってよい)。
+   敵の状態はステージ上端、味方の状態はステージ下端に横一列で置く */
 .icons {
   position: absolute;
-  top: 30px;
-  bottom: 6px;
+  left: 4px;
+  right: 4px;
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
   gap: 4px;
-  width: 28px;
-  align-items: center;
+  justify-content: center;
   pointer-events: none;
 }
 
-#icons-left {
-  left: 4px;
+#icons-enemy {
+  top: 40px;
 }
 
-#icons-right {
-  right: 4px;
+#icons-ally {
+  bottom: 4px;
 }
 
 .badge {
@@ -468,6 +510,25 @@ button:active:not(:disabled) {
   font-size: 15px;
 }
 
+/* 陣営の絞り込みボタン。候補一覧の上部、ヘッダーの下に横並びで置く */
+.picker-filter {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 4px;
+}
+
+.picker-filter button {
+  flex: 1;
+  text-align: center;
+  font-size: 11px;
+  padding: 6px 2px;
+}
+
+.picker-filter button.active {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
 .picker-list {
   flex: 1 1 auto;
   min-height: 0;
@@ -497,17 +558,80 @@ button:active:not(:disabled) {
   color: var(--good);
 }
 
-.picker-detail {
-  padding: 6px 8px 8px;
-  border-top: 1px solid var(--line);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
 .picker-skill,
 .picker-passive {
   margin: 0;
   font-size: 11px;
   color: var(--dim);
+}
+
+/* ---------------------------------------------------------------------- */
+/* 詳細ポップアップ (モーダル)。行内のアコーディオンだとボタンが見切れて読みにくいので、
+   #picker の上にもう 1 段重ねて出す。375x667 に収まるサイズにし、
+   スクロールが要るときは中身 (.modal-scroll) だけに閉じ込める */
+
+#detail-modal[hidden] {
+  display: none;
+}
+
+#detail-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: rgba(3, 5, 8, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.modal-card {
+  width: 100%;
+  max-width: 320px;
+  max-height: calc(100dvh - 32px);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.modal-head {
+  flex: 0 0 auto;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.modal-title {
+  margin: 0;
+  font-size: 14px;
+}
+
+.modal-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.modal-scroll .card-sub {
+  margin-bottom: 2px;
+}
+
+.modal-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+}
+
+.modal-actions button {
+  flex: 1;
+  text-align: center;
+  min-height: 40px;
 }

@@ -187,6 +187,15 @@ function addLog(state: BattleState, kind: LogLineView['kind'], text: string): vo
 }
 
 /**
+ * battle.log へ 1 行足す、外部 (game.ts) 向けの窓口。
+ * 大技 1 ターン前のアナウンスのように、ルールそのものではなく戦況から作る文言を
+ * endTurn の直後に足したいときに使う。ここでしか battle.log に触れないよう集約しておく
+ */
+export function logBattle(state: BattleState, kind: LogLineView['kind'], text: string): void {
+  addLog(state, kind, text);
+}
+
+/**
  * 物理スキルの turnBump はターン明けでしか戻らないので、戦闘がプレイヤーの行動中に
  * 勝利で終わる (endTurn を経由しない) と上がったまま次の戦闘に持ち越ってしまう。
  * 戦闘開始のたびに前衛・控え全員ぶん 0 に戻して、素のコストで始まるようにする
@@ -452,7 +461,7 @@ export function endTurn(state: BattleState, rng: Rng): void {
         addLog(state, 'bad', `${enemy.def.name} の大技。${dmg} 受けた。`);
         if (enemy.def.isBoss) {
           if (state.guard >= enemy.def.guardBreak) {
-            addLog(state, 'good', 'ガードがダウンを防いだ。');
+            addLog(state, 'good', '防御がダウンを防いだ。');
           } else {
             const occupied = state.party.front.flatMap((f, i) => (f ? [i] : []));
             if (occupied.length > 0) downSlot(state, rng.pick(occupied), rng, '大技で', true);

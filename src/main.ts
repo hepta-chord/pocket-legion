@@ -1,5 +1,6 @@
 import './style.css';
 import type { SwapMove } from './battle';
+import { FACTION_NAMES, FACTIONS, type Faction } from './data/factions';
 import { addLog, newGame, step, toViewModel, type Action, type GameState } from './game';
 import { portraitFor } from './render/portraits';
 import type { Renderer } from './render/renderer';
@@ -21,14 +22,15 @@ const renderer: Renderer = new TextRenderer(canvas);
 
 const portraitEl = byId('portrait');
 const stageBody = byId('stage-body');
-const iconsLeft = byId('icons-left');
-const iconsRight = byId('icons-right');
+const iconsEnemy = byId('icons-enemy');
+const iconsAlly = byId('icons-ally');
 const logBox = byId('log');
 const cluster = byId('cluster');
 const slotsEl = byId('slots');
 const controlsEl = byId('controls');
 const status = byId('status');
 const pickerEl = byId('picker');
+const detailModalEl = byId('detail-modal');
 
 const loaded = loadGame();
 let state: GameState = loaded.state ?? newGame(randomSeedString());
@@ -47,7 +49,11 @@ let dungeonFormationOpen = false;
 let swapMode = false;
 let swapPending: SwapMove[] = [];
 
-/** 編成候補・交代候補のピッカー。スロットをタップして開き、一覧からキャラを選ぶ (行をタップで詳細が開く) */
+// 探索の「進む」演出中フラグ。演出は main.ts (描画層) だけに閉じ、game.ts にタイマーを持ち込まない。
+// 演出中は操作ボタンを無効化して、連打による多重前進を防ぐ
+let advancing = false;
+
+/** 編成候補・交代候補のピッカー。スロットをタップして開き、一覧からキャラを選ぶ (行をタップで詳細ポップアップが開く) */
 interface PickerConfig {
   title: string;
   rows: (FormationCharacterView & { placedSlot: number | null })[];
@@ -56,11 +62,15 @@ interface PickerConfig {
   onPick: (id: string | null) => void;
 }
 let picker: PickerConfig | null = null;
-let pickerExpanded: string | null = null;
+/** 陣営の絞り込み。ピッカーを開き直すたび 'all' に戻す */
+let pickerFactionFilter: 'all' | Faction = 'all';
+/** タップして開いた詳細ポップアップの対象。null なら閉じている */
+let detailRow: (FormationCharacterView & { placedSlot: number | null }) | null = null;
 
 function closePicker(): void {
   picker = null;
-  pickerExpanded = null;
+  pickerFactionFilter = 'all';
+  detailRow = null;
 }
 
 function act(action: Action): void {
