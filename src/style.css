@@ -205,11 +205,6 @@ button:active:not(:disabled) {
   color: var(--warn);
 }
 
-/* 拠点の情景。戦闘の敵・探索のイベントと違って警戒色にする理由が無いので、地の文と同じ色にする */
-.portrait-art.town {
-  color: var(--fg);
-}
-
 /* 探索中のイベントアイコン。将来 <img> に差し替えても枠のサイズは変えずに済むよう、
    portrait-art と同じく固定サイズのプレースホルダにする */
 .event-icon-art {

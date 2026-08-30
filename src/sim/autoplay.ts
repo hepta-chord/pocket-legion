@@ -27,27 +27,17 @@ import {
   type SwapMove,
 } from '../battle';
 import { buildFighter, CHARACTERS, type CharacterEntry } from '../data/characters';
+import { generateCommon } from '../data/common-gen';
 import { makeBoss, makeFoe } from '../data/enemies';
+import { FACTIONS } from '../data/factions';
 import { Rng } from '../rng';
 
-/** 重複無しで n 件抜く。tavern の抽選・加入イベントの選択と同じ考え方 */
-function pickN<T>(pool: readonly T[], n: number, rng: Rng): T[] {
-  const remaining = [...pool];
-  const out: T[] = [];
-  for (let i = 0; i < n && remaining.length > 0; i++) {
-    const idx = rng.int(0, remaining.length - 1);
-    out.push(remaining[idx]);
-    remaining.splice(idx, 1);
-  }
-  return out;
-}
+/** コモンの id (`common-N`) に振る通し番号。生成の結果には影響しない */
+let simCommonSerial = 1;
 
-/** ダンジョン内の加入イベント (recruit) の簡略版。所持していないコモンを 1 人デッキに足す */
-function addRecruit(party: Party, roster: Set<string>, rng: Rng): void {
-  const candidates = CHARACTERS.filter((c) => c.rarity === 'common' && !roster.has(c.id));
-  if (candidates.length === 0) return;
-  const picked = rng.pick(candidates);
-  roster.add(picked.id);
+/** ダンジョン内の加入イベント (recruit) の簡略版。コモンを 1 人その場で生成してデッキに足す */
+function addRecruit(party: Party, rng: Rng): void {
+  const picked = generateCommon(rng.pick(FACTIONS), rng, simCommonSerial++);
   const fighter = buildFighter(picked);
   const idx = party.front.findIndex((f) => f === null);
   if (idx >= 0) party.front[idx] = fighter;
@@ -184,12 +174,12 @@ const TURN_CAP = 25;
 const BOSS_TURN_CAP = 200;
 
 export function playSortie(sectorId: number, startDepth: number, rng: Rng): SortieResult {
-  // 出撃開始時: hero + mate + コモンから rng で 3 人 (酒場の代わり)
+  // 出撃開始時: hero + mate + コモン 3 人 (酒場の代わり。陣営はランダムに引く)
   const hero = CHARACTERS.find((c) => c.id === 'hero')!;
   const mate = CHARACTERS.find((c) => c.id === 'mate')!;
-  const commons = CHARACTERS.filter((c) => c.rarity === 'common' && c.id !== mate.id);
-  const startCommons = pickN(commons, 3, rng);
-  const roster = new Set<string>(['hero', mate.id, ...startCommons.map((c) => c.id)]);
+  const startCommons = [0, 1, 2].map(() => generateCommon(rng.pick(FACTIONS), rng, simCommonSerial++));
+  // レアは有限 (4 人) なので、ボス前の分岐で引いた分だけ所持 id を追う
+  const ownedRareIds = new Set<string>();
   const initial: CharacterEntry[] = [hero, mate, ...startCommons];
   const party: Party = newParty(initial.map(buildFighter), []);
   let maxHp = partyMaxHp(party);
@@ -211,7 +201,7 @@ export function playSortie(sectorId: number, startDepth: number, rng: Rng): Sort
     const depth = startDepth + step * 2;
 
     // 泉のリセットと recruit のデッキ加入を、区間ごとの近似確率で反映する
-    if (rng.chance(RECRUIT_CHANCE_PER_STEP)) addRecruit(party, roster, rng);
+    if (rng.chance(RECRUIT_CHANCE_PER_STEP)) addRecruit(party, rng);
     if (rng.chance(SPRING_CHANCE_PER_STEP)) {
       hp = Math.min(maxHp, hp + Math.round(maxHp * 0.5));
       resetSortieProgress(party);
@@ -244,10 +234,10 @@ export function playSortie(sectorId: number, startDepth: number, rng: Rng): Sort
     hp = maxHp;
     resetSortieProgress(party);
   } else {
-    const rareCandidates = CHARACTERS.filter((c) => c.rarity === 'rare' && !roster.has(c.id));
+    const rareCandidates = CHARACTERS.filter((c) => c.rarity === 'rare' && !ownedRareIds.has(c.id));
     if (rareCandidates.length > 0) {
       const picked = rng.pick(rareCandidates);
-      roster.add(picked.id);
+      ownedRareIds.add(picked.id);
       const fighter = buildFighter(picked);
       const idx = party.front.findIndex((f) => f === null);
       if (idx >= 0) party.front[idx] = fighter;

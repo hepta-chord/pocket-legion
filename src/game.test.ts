@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { CHARACTERS } from './data/characters';
+import { generateCommon } from './data/common-gen';
 import { BOSS_ALT_EVENT, EVENTS } from './data/events';
 import { newGame, step, toViewModel, type Action, type GameState } from './game';
+import { Rng } from './rng';
 
 function fresh(): GameState {
   return newGame('TESTAA');
@@ -286,64 +288,94 @@ describe('大技 1 ターン前のアナウンス', () => {
 });
 
 describe('初期状態', () => {
-  it('roster は hero と mate だけ、所持金は 300、酒場にはコモン 3 人が並ぶ', () => {
+  it('owned は主人公と相棒だけ、所持金は 300、酒場には 3 人が並ぶ', () => {
     const state = fresh();
-    expect(state.roster).toEqual(['hero', 'mate']);
+    expect(state.owned.map((c) => c.id)).toEqual(['hero', 'mate']);
     expect(state.gold).toBe(300);
     expect(state.tavern).toHaveLength(3);
-    for (const id of state.tavern) {
-      const entry = CHARACTERS.find((c) => c.id === id);
-      expect(entry?.rarity).toBe('common');
-      expect(state.roster).not.toContain(id);
+    for (const c of state.tavern) {
+      expect(state.owned.some((o) => o.id === c.id)).toBe(false);
+      // レアが混ざっていれば、酒場限定 (source: 'tavern') のものだけになる
+      if (c.rarity === 'rare') expect(c.source).toBe('tavern');
     }
   });
 });
 
 describe('酒場', () => {
-  it('雇うと roster に加わり、金が減り、酒場から外れる', () => {
+  it('雇うと owned に加わり、金が減り、酒場から外れる (雇った個体そのものが owned に残る)', () => {
     const state = fresh();
-    const id = state.tavern[0];
-    const entry = CHARACTERS.find((c) => c.id === id)!;
+    // レアが混ざっていても (400 G) 必ず雇えるだけの所持金にしておく
+    state.gold = 1000;
+    const entry = state.tavern[0];
     const goldBefore = state.gold;
-    step(state, { type: 'hire', id });
-    expect(state.roster).toContain(id);
+    step(state, { type: 'hire', id: entry.id });
+    const owned = state.owned.find((o) => o.id === entry.id);
+    expect(owned).toBeDefined();
     expect(state.gold).toBe(goldBefore - entry.price);
-    expect(state.tavern).not.toContain(id);
+    expect(state.tavern.some((t) => t.id === entry.id)).toBe(false);
+    // 生成コモンでも、雇った後は酒場に並んでいたときと同じスキル構成のまま残る
+    expect(owned?.skills.map((s) => s.name)).toEqual(entry.skills.map((s) => s.name));
   });
 
   it('金が足りなければ雇えない', () => {
     const state = fresh();
     state.gold = 0;
-    const id = state.tavern[0];
+    const id = state.tavern[0].id;
     step(state, { type: 'hire', id });
-    expect(state.roster).not.toContain(id);
+    expect(state.owned.some((o) => o.id === id)).toBe(false);
     expect(state.gold).toBe(0);
   });
 
   it('酒場にいない id は雇えない', () => {
     const state = fresh();
-    const rosterBefore = [...state.roster];
+    const ownedBefore = [...state.owned];
     step(state, { type: 'hire', id: 'not-in-tavern' });
-    expect(state.roster).toEqual(rosterBefore);
+    expect(state.owned).toEqual(ownedBefore);
   });
 
   it('出撃を終えるたびに酒場が引き直される', () => {
     const state = fresh();
-    const before = [...state.tavern];
     step(state, { type: 'sortie', sectorId: 1 });
     step(state, { type: 'retreat' });
-    // 品揃えが変わりうることの確認 (所持していないコモンからの抽選なので、hero/mate 以外は毎回同じ結果とは限らない)
     expect(state.tavern).toHaveLength(3);
-    for (const id of state.tavern) {
-      expect(state.roster).not.toContain(id);
+    for (const c of state.tavern) {
+      expect(state.owned.some((o) => o.id === c.id)).toBe(false);
     }
-    // seed が同じ手順で毎回引き直されることの再現性だけ見る (中身の変化までは問わない)
-    expect(Array.isArray(before)).toBe(true);
+  });
+
+  it('酒場にレアが混ざりうること、ダンジョン限定レア (source: dungeon) は混ざらないこと', () => {
+    // 低確率 (15%) の当たりなので、seed を変えて何度も引き直して確かめる
+    let sawRare = false;
+    for (let seed = 0; seed < 200; seed++) {
+      const state = newGame(`SEED${seed}`);
+      for (const c of state.tavern) {
+        if (c.rarity !== 'rare') continue;
+        sawRare = true;
+        expect(c.source).toBe('tavern');
+      }
+    }
+    expect(sawRare).toBe(true);
+  });
+
+  it('1 回の品揃えの中で名前が重複しない', () => {
+    for (let seed = 0; seed < 200; seed++) {
+      const state = newGame(`NAME${seed}`);
+      const names = state.tavern.map((c) => c.name);
+      expect(new Set(names).size).toBe(names.length);
+    }
+  });
+
+  it('陣営が 4 つあり品揃えは 3 人なので、可能な範囲で陣営が散らばる (3 枠すべて同じ陣営にならない)', () => {
+    for (let seed = 0; seed < 200; seed++) {
+      const state = newGame(`FACTION${seed}`);
+      const factions = new Set(state.tavern.map((c) => c.faction));
+      expect(factions.size).toBeGreaterThan(1);
+    }
   });
 });
 
 describe('出撃時のパーティ編成', () => {
-  it('roster 全員でパーティを組む (roster が 2 人なら 2 人で潜る)', () => {
+  it('owned 全員でパーティを組む (owned が 2 人なら 2 人で潜る)', () => {
     const state = fresh();
     step(state, { type: 'sortie', sectorId: 1 });
     expect(state.run?.party.front.filter(Boolean)).toHaveLength(2);
@@ -351,7 +383,9 @@ describe('出撃時のパーティ編成', () => {
 
   it('雇ったキャラも次の出撃からパーティに入る', () => {
     const state = fresh();
-    const id = state.tavern[0];
+    // レアが混ざっていても (400 G) 必ず雇えるだけの所持金にしておく
+    state.gold = 1000;
+    const id = state.tavern[0].id;
     step(state, { type: 'hire', id });
     step(state, { type: 'sortie', sectorId: 1 });
     const front = state.run!.party.front;
@@ -359,13 +393,45 @@ describe('出撃時のパーティ編成', () => {
   });
 });
 
+describe('セーブ・ロードを跨いだ生成コモンの同一性', () => {
+  it('雇った生成コモンは JSON の保存・復元を跨いでも同じスキル・数値を持つ', () => {
+    const state = fresh();
+    // レアが混ざっていても (400 G) 必ず雇えるだけの所持金にしておく
+    state.gold = 1000;
+    const entry = state.tavern[0];
+    step(state, { type: 'hire', id: entry.id });
+
+    // save.ts は JSON.stringify/parse を通すだけなので、ここでも同じ経路で確かめる
+    const restored: GameState = JSON.parse(JSON.stringify(state));
+    const owned = restored.owned.find((o) => o.id === entry.id);
+    expect(owned).toBeDefined();
+    expect(owned?.name).toBe(entry.name);
+    expect(owned?.faction).toBe(entry.faction);
+    expect(owned?.attack).toBe(entry.attack);
+    expect(owned?.vitality).toBe(entry.vitality);
+    expect(owned?.skills.map((s) => s.name)).toEqual(entry.skills.map((s) => s.name));
+    expect(owned?.passives.map((p) => p.name)).toEqual(entry.passives.map((p) => p.name));
+  });
+});
+
+describe('拠点の一覧', () => {
+  it('迷宮 (区画) と酒場が ViewModel に並んで届く', () => {
+    const state = fresh();
+    const vm = toViewModel(state);
+    expect(vm.screen.kind).toBe('town');
+    if (vm.screen.kind !== 'town') return;
+    expect(vm.screen.sectors).toHaveLength(3);
+    expect(vm.screen.sectors[0].unlocked).toBe(true);
+    expect(Array.isArray(vm.screen.tavern)).toBe(true);
+  });
+});
+
 describe('編成: 空にする / 全て外す', () => {
-  /** 自動詰めが前衛 6 枠を丸ごと埋めるだけの人数を roster に用意する */
+  /** 自動詰めが前衛 6 枠を丸ごと埋めるだけの人数を owned に用意する (生成コモンを 4 人足す) */
   function sixPersonRoster(state: GameState): void {
-    const commons = CHARACTERS.filter((c) => c.rarity === 'common')
-      .slice(0, 4)
-      .map((c) => c.id);
-    state.roster = ['hero', 'mate', ...commons];
+    const rng = new Rng(1);
+    const generated = [1, 2, 3, 4].map((i) => generateCommon('kingdom', rng, i));
+    state.owned = [...state.owned, ...generated];
   }
 
   it('未編集のまま 1 枠だけ空にしても、他の枠の自動詰めは残る (以前は全枠が空になる不具合があった)', () => {
@@ -403,7 +469,7 @@ describe('編成: 空にする / 全て外す', () => {
 
     step(state, { type: 'sortie', sectorId: 1 });
     expect(state.run?.party.front.every((f) => f === null)).toBe(true);
-    expect(state.run?.party.reserve).toHaveLength(state.roster.length);
+    expect(state.run?.party.reserve).toHaveLength(state.owned.length);
   });
 });
 
@@ -480,27 +546,31 @@ describe('泉イベント', () => {
 });
 
 describe('ダンジョン内の加入イベント', () => {
-  it('所持していないコモンが 1 人 roster とデッキに加わる', () => {
+  it('コモンが 1 人その場で生成され、owned とデッキに加わる', () => {
     const state = fresh();
     step(state, { type: 'sortie', sectorId: 1 });
     const run = state.run!;
-    const rosterBefore = state.roster.length;
+    const ownedBefore = state.owned.length;
     run.pending = EVENTS.find((e) => e.kind === 'recruit')!;
     step(state, { type: 'resolve' });
-    expect(state.roster.length).toBe(rosterBefore + 1);
-    const newId = state.roster[state.roster.length - 1];
-    expect([...run.party.front, ...run.party.reserve].some((f) => f?.id === newId)).toBe(true);
+    expect(state.owned.length).toBe(ownedBefore + 1);
+    const newEntry = state.owned[state.owned.length - 1];
+    expect(newEntry.rarity).toBe('common');
+    expect([...run.party.front, ...run.party.reserve].some((f) => f?.id === newEntry.id)).toBe(true);
   });
 
-  it('全コモン所持済みなら金に化ける', () => {
+  it('コモンは固定名簿を持たないので、大量に所持していても加入イベントは常に新しい個体を生成する (金には化けない)', () => {
     const state = fresh();
-    state.roster = CHARACTERS.filter((c) => c.rarity === 'common').map((c) => c.id);
+    const rng = new Rng(1);
+    state.owned.push(...[1, 2, 3, 4, 5].map((i) => generateCommon('order', rng, i)));
     step(state, { type: 'sortie', sectorId: 1 });
     const run = state.run!;
+    const ownedBefore = state.owned.length;
     const goldBefore = run.gold;
     run.pending = EVENTS.find((e) => e.kind === 'recruit')!;
     step(state, { type: 'resolve' });
-    expect(run.gold).toBeGreaterThan(goldBefore);
+    expect(state.owned.length).toBe(ownedBefore + 1);
+    expect(run.gold).toBe(goldBefore);
   });
 });
 
@@ -522,33 +592,34 @@ describe('ボス前の分岐イベント', () => {
     expect(run.pending).toBeNull();
   });
 
-  it('「レアを迎える」で未所持のレアが roster とデッキに加わる', () => {
+  it('「レアを迎える」で未所持の dungeon 限定レアが owned とデッキに加わる', () => {
     const state = fresh();
     step(state, { type: 'sortie', sectorId: 1 });
     const run = state.run!;
     run.pending = BOSS_ALT_EVENT;
-    const rosterBefore = state.roster.length;
+    const ownedBefore = state.owned.length;
 
     step(state, { type: 'resolve-alt' });
 
-    expect(state.roster.length).toBe(rosterBefore + 1);
-    const newId = state.roster[state.roster.length - 1];
-    expect(CHARACTERS.find((c) => c.id === newId)?.rarity).toBe('rare');
-    expect([...run.party.front, ...run.party.reserve].some((f) => f?.id === newId)).toBe(true);
+    expect(state.owned.length).toBe(ownedBefore + 1);
+    const newEntry = state.owned[state.owned.length - 1];
+    expect(newEntry.rarity).toBe('rare');
+    expect(newEntry.source).toBe('dungeon');
+    expect([...run.party.front, ...run.party.reserve].some((f) => f?.id === newEntry.id)).toBe(true);
     expect(run.pending).toBeNull();
   });
 
-  it('全レア所持済みなら resolve-alt は何もしない', () => {
+  it('dungeon 限定レアを全員所持済みなら resolve-alt は何もしない (酒場限定レアの所持有無は問わない)', () => {
     const state = fresh();
-    state.roster = [...state.roster, ...CHARACTERS.filter((c) => c.rarity === 'rare').map((c) => c.id)];
+    state.owned = [...state.owned, ...CHARACTERS.filter((c) => c.rarity === 'rare' && c.source === 'dungeon')];
     step(state, { type: 'sortie', sectorId: 1 });
     const run = state.run!;
     run.pending = BOSS_ALT_EVENT;
-    const rosterBefore = state.roster.length;
+    const ownedBefore = state.owned.length;
 
     step(state, { type: 'resolve-alt' });
 
-    expect(state.roster.length).toBe(rosterBefore);
+    expect(state.owned.length).toBe(ownedBefore);
     expect(run.pending).not.toBeNull();
   });
 });

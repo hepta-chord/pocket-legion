@@ -1,11 +1,15 @@
 // 編成 (formation) の型と操作。
 //
 // 編成が決めるのは「前衛 6 人に誰を置くか」だけ。控えは絞らない仕様なので
-// (デッキは roster 全員、前衛に選ばれなかった人が自動で控えに回る)、
+// (デッキは所持キャラ全員、前衛に選ばれなかった人が自動で控えに回る)、
 // 編成として persist するのは前衛 6 枠ぶんの id 列で足りる。
 // Fighter (レベル・コスト上昇などの可変状態を持つ実体) への変換は startRun のタイミングでだけ行う。
+//
+// 所持キャラは固定のレア/主人公/相棒だけでなく、その場で生成したコモンも含む
+// (GameState.owned: CharacterEntry[])。CHARACTERS (固定定義) を直接引かず、
+// 呼び出し側が渡す owned の中から探す形にして、生成コモンも同じ経路で Fighter に変換できるようにする
 
-import { buildFighter, CHARACTERS } from './data/characters';
+import { buildFighter, type CharacterEntry } from './data/characters';
 import { FRONT_SIZE, type Fighter, type Party } from './battle';
 
 export const FRONT_SLOTS = FRONT_SIZE;
@@ -61,25 +65,27 @@ export function placeInFormation(formation: Formation, slot: number, id: string 
   formation[slot] = id;
 }
 
-function fighterOf(id: string): Fighter | null {
-  const entry = CHARACTERS.find((c) => c.id === id);
-  return entry ? buildFighter(entry) : null;
-}
-
 /**
- * roster (所持キャラ全員) と編成 (前衛 6 枠) から Party を組む。
- * 前衛は編成どおりに、控えは前衛に選ばれなかった roster 全員になる。
+ * owned (所持キャラ全員) と編成 (前衛 6 枠) から Party を組む。
+ * 前衛は編成どおりに、控えは前衛に選ばれなかった owned 全員になる。
  * デッキは絞らない仕様なので、控えの人数に上限は無い
  */
 export function partyFromRosterAndFormation(
-  roster: readonly string[],
+  owned: readonly CharacterEntry[],
   formation: readonly (string | null)[],
   touched?: boolean,
 ): Party {
-  const front6 = resolveFormation(roster, formation, touched);
+  const byId = new Map(owned.map((entry) => [entry.id, entry] as const));
+  const fighterOf = (id: string): Fighter | null => {
+    const entry = byId.get(id);
+    return entry ? buildFighter(entry) : null;
+  };
+
+  const ids = owned.map((entry) => entry.id);
+  const front6 = resolveFormation(ids, formation, touched);
   const frontIds = new Set(front6.filter((id): id is string => id !== null));
   const front = front6.map((id) => (id ? fighterOf(id) : null));
-  const reserve = roster
+  const reserve = ids
     .filter((id) => !frontIds.has(id))
     .map(fighterOf)
     .filter((f): f is Fighter => f !== null);

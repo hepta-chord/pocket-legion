@@ -28,7 +28,8 @@ import {
   type SwapMove,
 } from './battle';
 import { CHARACTERS, skillLabels, type CharacterEntry } from './data/characters';
-import { FACTION_NAMES } from './data/factions';
+import { generateCommon } from './data/common-gen';
+import { FACTION_NAMES, FACTIONS, type Faction } from './data/factions';
 import { makeBoss, makeFoe } from './data/enemies';
 import { DUNGEONS } from './data/dungeons';
 import { sectorById } from './data/sectors';
@@ -67,14 +68,19 @@ import type {
   ViewModel,
 } from './view';
 
-// 戦闘ルール v2 (防御の改称・鼓舞ガードのスタック制・マナの奇偶・スタン・逃げる) で
-// GameState / BattleState の形が変わったので、古いセーブと噛み合わなくなる。区切りを上げて捨てる
-export const SAVE_VERSION = 7;
+// コモンを固定名簿から生成に変え、GameState.roster (id 列) を GameState.owned
+// (生成した個体そのものを持つ CharacterEntry 列) に変えたので、古いセーブと噛み合わなくなる。
+// 区切りを上げて捨てる
+export const SAVE_VERSION = 9;
 
 /** 回復薬の所持上限 */
 const POTION_MAX = 3;
 /** 出撃開始時の所持金。コモン 2 人を雇って 60 残る水準 */
 const START_GOLD = 300;
+/** 酒場の品揃えの人数 */
+const TAVERN_SIZE = 3;
+/** 酒場の品揃えに未所持レアを混ぜる確率。低確率の当たり枠にする */
+const TAVERN_RARE_CHANCE = 0.15;
 
 export type Action =
   | { type: 'sortie'; sectorId: number }
@@ -109,13 +115,23 @@ export interface GameState {
   gold: number;
   /** 回復薬の所持数。上限 POTION_MAX */
   potions: number;
-  /** 所持キャラの id 列。hero と mate は常に含む */
-  roster: string[];
   /**
-   * 前衛の編成。長さ 6 固定、値は roster の id か空きを示す null。
-   * デッキは絞らないので、控えは前衛に選ばれなかった roster 全員が自動で務める。
+   * 所持キャラそのもの。hero と mate は常に含む。
+   * 固定のレア・主人公・相棒は CHARACTERS の定義をそのまま積む一方、
+   * 生成コモンは生成した個体そのもの (id・名前・スキル・パッシブ・数値) を積む。
+   * 「id で引き直す」経路を持たないので、生成コモンも所持した後は同じ個体のまま残る
+   */
+  owned: CharacterEntry[];
+  /**
+   * 次に生成するコモンへ振る通し番号。id (`common-N`) の衝突を避けるためだけの値で、
+   * ゲームの結果には影響しない
+   */
+  nextCommonId: number;
+  /**
+   * 前衛の編成。長さ 6 固定、値は owned の id か空きを示す null。
+   * デッキは絞らないので、控えは前衛に選ばれなかった owned 全員が自動で務める。
    * 一度も編成を触っていない (formationTouched が false) ときだけ
-   * roster の先頭 6 人を自動で詰める (resolveFormation)
+   * owned の先頭 6 人を自動で詰める (resolveFormation)
    */
   formation: Formation;
   /**
@@ -126,8 +142,11 @@ export interface GameState {
    * 別のフラグとして持つ
    */
   formationTouched: boolean;
-  /** 今の酒場の品揃え (コモンの id、最大 3 人) */
-  tavern: string[];
+  /**
+   * 今の酒場の品揃え (最大 3 人)。生成コモンに加え、低確率で未所持レア (source: 'tavern') を混ぜる。
+   * 生成した個体そのものを持つので、雇うとそのまま owned に移せる
+   */
+  tavern: CharacterEntry[];
   /** 解放済みの区画。ボスを倒すと 1 つ増える */
   unlocked: number;
   /**
@@ -146,31 +165,82 @@ export interface GameState {
 
 const LOG_LIMIT = 8;
 
-/** 所持していないコモンから rng で最大 3 人を引く (足りなければあるだけ) */
+/** source に一致する、まだ所持していないレアの一覧 */
+function unownedRares(owned: readonly CharacterEntry[], source: 'tavern' | 'dungeon'): CharacterEntry[] {
+  const ownedIds = new Set(owned.map((c) => c.id));
+  return CHARACTERS.filter((c) => c.rarity === 'rare' && c.source === source && !ownedIds.has(c.id));
+}
+
+function hasUnownedRare(owned: readonly CharacterEntry[], source: 'tavern' | 'dungeon'): boolean {
+  return unownedRares(owned, source).length > 0;
+}
+
+/**
+ * コモンを 1 人生成する。酒場の 1 回の品揃えの中で同じ名前が並ぶと見分けがつかないので、
+ * 名前が使用済みなら生成し直す (陣営ごとの名前候補は 8 個あるので、数回のやり直しで
+ * まず解ける。上限を切って無限ループだけは避ける)。
+ * 陣営も、まだ品揃えに出ていないものを優先して選ぶ (3 枠すべて同じ陣営になるのを避ける。
+ * 4 陣営とも出尽くしていれば重複を許す)
+ */
+function pickCommonAvoidingDuplicates(
+  state: GameState,
+  rng: Rng,
+  usedNames: ReadonlySet<string>,
+  usedFactions: ReadonlySet<Faction>,
+): CharacterEntry {
+  const freshFactions = FACTIONS.filter((f) => !usedFactions.has(f));
+  const factionPool = freshFactions.length > 0 ? freshFactions : FACTIONS;
+  const faction = rng.pick(factionPool);
+
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const candidate = generateCommon(faction, rng, state.nextCommonId++);
+    if (!usedNames.has(candidate.name)) return candidate;
+  }
+  // 20 回やり直しても衝突するのは名前候補が尽きるほど狭いときだけで、実運用では起きない想定。
+  // それでも固まらないよう、最後は重複を許して返す
+  return generateCommon(faction, rng, state.nextCommonId++);
+}
+
+/**
+ * 酒場の品揃えを引き直す。コモンはその場で生成し (陣営はランダム、ただし品揃え内で散らす)、
+ * 低確率 (TAVERN_RARE_CHANCE) で source: 'tavern' の未所持レアに差し替える。
+ * レア・コモンを問わず、酒場の 1 回の品揃えの中で同じ人・同じ名前が重複しないようにする
+ */
 function rerollTavern(state: GameState, rng: Rng): void {
-  const remaining = CHARACTERS.filter((c) => c.rarity === 'common' && !state.roster.includes(c.id));
-  const picked: string[] = [];
-  for (let i = 0; i < 3 && remaining.length > 0; i++) {
-    const idx = rng.int(0, remaining.length - 1);
-    picked.push(remaining[idx].id);
-    remaining.splice(idx, 1);
+  const picked: CharacterEntry[] = [];
+  const usedRareIds = new Set<string>();
+  const usedNames = new Set<string>();
+  const usedFactions = new Set<Faction>();
+  for (let i = 0; i < TAVERN_SIZE; i++) {
+    const rareCandidates = unownedRares(state.owned, 'tavern').filter((c) => !usedRareIds.has(c.id));
+    if (rareCandidates.length > 0 && rng.chance(TAVERN_RARE_CHANCE)) {
+      const rare = rng.pick(rareCandidates);
+      usedRareIds.add(rare.id);
+      usedNames.add(rare.name);
+      usedFactions.add(rare.faction);
+      picked.push(rare);
+      continue;
+    }
+    const common = pickCommonAvoidingDuplicates(state, rng, usedNames, usedFactions);
+    usedNames.add(common.name);
+    usedFactions.add(common.faction);
+    picked.push(common);
   }
   state.tavern = picked;
 }
 
-function hasUnownedRare(roster: readonly string[]): boolean {
-  return CHARACTERS.some((c) => c.rarity === 'rare' && !roster.includes(c.id));
-}
-
 export function newGame(seed: string): GameState {
   const rng = new Rng(hashSeed(seed));
+  const hero = CHARACTERS.find((c) => c.id === 'hero')!;
+  const mate = CHARACTERS.find((c) => c.id === 'mate')!;
   const state: GameState = {
     version: SAVE_VERSION,
     seed,
     rngState: rng.state,
     gold: START_GOLD,
     potions: 0,
-    roster: ['hero', 'mate'],
+    owned: [hero, mate],
+    nextCommonId: 1,
     formation: emptyFormation(),
     formationTouched: false,
     tavern: [],
@@ -251,26 +321,27 @@ function resolveBossAltHeal(run: RunState): string {
   return revived > 0 ? `泉で全快した。${revived} 人が戦線に復帰した。` : '泉で全快した。';
 }
 
-/** ボス前の分岐イベント「レアを迎える」。未所持のレアから 1 人選び、roster とデッキに入れる */
+/**
+ * ボス前の分岐イベント「レアを迎える」。source: 'dungeon' の未所持レアから 1 人選び、
+ * owned とデッキに入れる (docs/plan.md「レアリティと入手」)
+ */
 function resolveBossAltRare(state: GameState, run: RunState, rng: Rng): string {
-  const candidates = CHARACTERS.filter((c) => c.rarity === 'rare' && !state.roster.includes(c.id));
+  const candidates = unownedRares(state.owned, 'dungeon');
   if (candidates.length === 0) return resolveBossAltHeal(run);
   const picked = rng.pick(candidates);
-  state.roster.push(picked.id);
+  state.owned.push(picked);
   addToDeck(run, picked);
   return `${picked.name} が仲間になった。`;
 }
 
-/** ダンジョン内の加入イベント。所持していないコモンから 1 人、無ければ金に化ける */
+/**
+ * ダンジョン内の加入イベント。コモンは固定の名簿を持たないので、
+ * 陣営をランダムに決めてその場で 1 人生成し、owned とデッキに入れる
+ */
 function resolveRecruit(state: GameState, run: RunState, rng: Rng): string {
-  const candidates = CHARACTERS.filter((c) => c.rarity === 'common' && !state.roster.includes(c.id));
-  if (candidates.length === 0) {
-    const gold = Math.round(100 * (1 + run.depth / 10));
-    run.gold += gold;
-    return `見知った顔ばかりだった。かわりに ${gold} G を渡された。`;
-  }
-  const picked = rng.pick(candidates);
-  state.roster.push(picked.id);
+  const faction = rng.pick(FACTIONS);
+  const picked = generateCommon(faction, rng, state.nextCommonId++);
+  state.owned.push(picked);
   addToDeck(run, picked);
   return `${picked.name} が仲間になった。`;
 }
@@ -368,7 +439,7 @@ export function step(state: GameState, action: Action): void {
     case 'sortie': {
       if (state.run) break;
       if (action.sectorId > state.unlocked) break;
-      state.run = startRun(action.sectorId, state.roster, state.formation, state.formationTouched);
+      state.run = startRun(action.sectorId, state.owned, state.formation, state.formationTouched);
       state.result = null;
       addLog(state, 'info', `${sectorById(action.sectorId).name}へ潜った。`);
       break;
@@ -438,7 +509,7 @@ export function step(state: GameState, action: Action): void {
       const run = state.run;
       if (!run || state.battle) break;
       if (!run.pending || run.pending.kind !== 'boss-alt') break;
-      if (!hasUnownedRare(state.roster)) break;
+      if (!hasUnownedRare(state.owned, 'dungeon')) break;
       run.pending = null;
       addLog(state, 'good', resolveBossAltRare(state, run, rng));
       break;
@@ -458,14 +529,15 @@ export function step(state: GameState, action: Action): void {
 
     case 'hire': {
       if (state.run || state.battle) break;
-      if (!state.tavern.includes(action.id)) break;
-      if (state.roster.includes(action.id)) break;
-      const entry = CHARACTERS.find((c) => c.id === action.id);
-      if (!entry) break;
+      const idx = state.tavern.findIndex((c) => c.id === action.id);
+      if (idx < 0) break;
+      const entry = state.tavern[idx];
       if (state.gold < entry.price) break;
       state.gold -= entry.price;
-      state.roster.push(entry.id);
-      state.tavern = state.tavern.filter((id) => id !== entry.id);
+      // 酒場に並んでいた個体そのものを所持に移す。生成コモンはこの参照を保つことで、
+      // 雇った後も同じ個体 (スキル・数値) のまま残る
+      state.owned.push(entry);
+      state.tavern.splice(idx, 1);
       addLog(state, 'good', `${entry.name} を雇った。`);
       break;
     }
@@ -474,12 +546,12 @@ export function step(state: GameState, action: Action): void {
       // 拠点の編成画面だけの操作にする。出撃中は state.formation を触らず、
       // 代わりに dungeon-formation-set でその場のデッキを並べ替える
       if (state.run || state.battle) break;
-      if (action.id !== null && !state.roster.includes(action.id)) break;
+      if (action.id !== null && !state.owned.some((c) => c.id === action.id)) break;
       if (!state.formationTouched) {
         // 初回の編集はまず今の自動詰めの並びを確定させてから 1 枠だけ変える。
         // でないと isFormationUnset が false になった瞬間、自動詰めしていた
         // 残り 5 枠まで表示上いっせいに空くバグになる (このスロットしか触っていないのに)
-        state.formation = autoFillFormation(state.roster);
+        state.formation = autoFillFormation(state.owned.map((c) => c.id));
         state.formationTouched = true;
       }
       placeInFormation(state.formation, action.slot, action.id);
@@ -667,7 +739,7 @@ function enemyActionLabel(action: EnemyAction): string {
   }
 }
 
-function toBattleView(b: BattleState, potions: number): BattleView {
+function toBattleView(b: BattleState, potions: number, owned: readonly CharacterEntry[]): BattleView {
   const e = b.enemy;
   return {
     kind: 'battle',
@@ -718,16 +790,16 @@ function toBattleView(b: BattleState, potions: number): BattleView {
         })),
       };
     }),
-    reserve: b.party.reserve.map(fighterCard),
+    reserve: b.party.reserve.map((f) => fighterCard(f, owned)),
     swapCooldown: b.party.swapCooldown,
     canDefense: b.defense < DEFENSE_MAX && b.mana >= DEFENSE_COST,
   };
 }
 
 /**
- * roster の id からキャラ定義を引いてカードにする。酒場・所持一覧・編成の候補一覧すべてで使う。
- * 一覧行の要約 (名前・陣営・レアリティ・攻撃力・体力) と、タップして開く詳細
- * (スキル・パッシブの効果) を両方含める
+ * CharacterEntry (固定定義かその場で生成した個体) をカードにする。酒場・所持一覧・編成の
+ * 候補一覧すべてで使う。一覧行の要約 (名前・陣営・レアリティ・攻撃力・体力) と、
+ * タップして開く詳細 (スキル・パッシブの効果) を両方含める
  */
 function characterCard(entry: CharacterEntry): FormationCharacterView {
   return {
@@ -745,10 +817,11 @@ function characterCard(entry: CharacterEntry): FormationCharacterView {
 
 /**
  * 出撃済みの Fighter を characterCard と同じ形のカードにする (ダンジョン内の編成・交代ピッカー用)。
- * レアリティはキャラ定義から引く (Fighter 自体は持たない)
+ * レアリティは owned (所持キャラそのもの) から引く。生成コモンも所持した個体をそのまま owned に
+ * 積んでいるので、CHARACTERS (固定定義) を見なくても owned だけで引ける
  */
-function fighterCard(f: Fighter): FormationCharacterView {
-  const entry = CHARACTERS.find((c) => c.id === f.id);
+function fighterCard(f: Fighter, owned: readonly CharacterEntry[]): FormationCharacterView {
+  const entry = owned.find((c) => c.id === f.id);
   return {
     id: f.id,
     name: f.name,
@@ -763,27 +836,27 @@ function fighterCard(f: Fighter): FormationCharacterView {
 }
 
 /** id の列 (前衛 6 枠) を編成カードの並びにする */
-function toFormationSlots(formation: readonly (string | null)[]): FormationSlotView[] {
+function toFormationSlots(owned: readonly CharacterEntry[], formation: readonly (string | null)[]): FormationSlotView[] {
   return formation.map((id) => {
     if (!id) return { character: null };
-    const entry = CHARACTERS.find((c) => c.id === id);
+    const entry = owned.find((c) => c.id === id);
     return { character: entry ? characterCard(entry) : null };
   });
 }
 
 /** ダンジョン内 (戦闘外) の編成データ。今の Party (front/reserve) の中身だけを見せる */
-function toDungeonFormationView(run: RunState): DungeonFormationView {
+function toDungeonFormationView(run: RunState, owned: readonly CharacterEntry[]): DungeonFormationView {
   const front = run.party.front;
-  const slots: FormationSlotView[] = front.map((f) => ({ character: f ? fighterCard(f) : null }));
+  const slots: FormationSlotView[] = front.map((f) => ({ character: f ? fighterCard(f, owned) : null }));
   const members = [...front.filter((f): f is Fighter => f !== null), ...run.party.reserve];
   const roster = members.map((f) => {
     const idx = front.indexOf(f);
-    return { ...fighterCard(f), placedSlot: idx >= 0 ? idx : null };
+    return { ...fighterCard(f, owned), placedSlot: idx >= 0 ? idx : null };
   });
   return { slots, roster };
 }
 
-function toDungeonView(run: RunState, potions: number, roster: readonly string[]): DungeonView {
+function toDungeonView(run: RunState, potions: number, owned: readonly CharacterEntry[]): DungeonView {
   const sector = sectorOf(run);
   const pending = run.atBoss
     ? { kind: 'boss' as const, title: '守護者', body: '奥から重い足音がする。', action: '挑む' }
@@ -794,7 +867,7 @@ function toDungeonView(run: RunState, potions: number, roster: readonly string[]
             title: run.pending.title,
             body: run.pending.body,
             action: run.pending.action,
-            alt: hasUnownedRare(roster) ? run.pending.altAction : undefined,
+            alt: hasUnownedRare(owned, 'dungeon') ? run.pending.altAction : undefined,
           }
         : { kind: run.pending.kind, title: run.pending.title, body: run.pending.body, action: run.pending.action }
       : null;
@@ -808,24 +881,25 @@ function toDungeonView(run: RunState, potions: number, roster: readonly string[]
     // 通路の見た目だけを 4 段で回す。ゲーム状態ではない
     corridor: run.depth % 4,
     event: pending,
-    front: run.party.front.map((f) => ({ character: f ? fighterCard(f) : null })),
+    front: run.party.front.map((f) => ({ character: f ? fighterCard(f, owned) : null })),
     frontCount: run.party.front.filter((f) => f !== null).length,
     reserveCount: run.party.reserve.length,
     downedCount: run.downed.length,
     potions,
-    formation: toDungeonFormationView(run),
+    formation: toDungeonFormationView(run, owned),
   };
 }
 
 function toTownView(state: GameState): TownView {
-  const entryOf = (id: string) => CHARACTERS.find((c) => c.id === id);
-  const rosterEntries = state.roster.map(entryOf).filter((c): c is CharacterEntry => c !== undefined);
-
-  const resolved = resolveFormation(state.roster, state.formation, state.formationTouched);
+  const resolved = resolveFormation(
+    state.owned.map((c) => c.id),
+    state.formation,
+    state.formationTouched,
+  );
   const formation: FormationEditorView = {
-    slots: toFormationSlots(resolved),
+    slots: toFormationSlots(state.owned, resolved),
     auto: !state.formationTouched,
-    roster: rosterEntries.map((entry) => {
+    roster: state.owned.map((entry) => {
       const idx = resolved.indexOf(entry.id);
       return { ...characterCard(entry), placedSlot: idx >= 0 ? idx : null };
     }),
@@ -843,11 +917,12 @@ function toTownView(state: GameState): TownView {
       depth: s.depth,
       unlocked: s.id <= state.unlocked,
     })),
-    tavern: state.tavern
-      .map(entryOf)
-      .filter((c): c is CharacterEntry => c !== undefined)
-      .map((entry) => ({ ...characterCard(entry), price: entry.price, affordable: state.gold >= entry.price })),
-    roster: rosterEntries.map(characterCard),
+    tavern: state.tavern.map((entry) => ({
+      ...characterCard(entry),
+      price: entry.price,
+      affordable: state.gold >= entry.price,
+    })),
+    roster: state.owned.map(characterCard),
     formation,
   };
 }
@@ -861,14 +936,14 @@ export function toViewModel(state: GameState): ViewModel {
     // 戦闘中は本編ログの末尾に battle.log をつないで、直近の場面が読めるようにする。
     // 本編ログそのものへは決着時 (settleBattle) にまとめて移すので、ここでは二重に積まない
     const log = [...state.log, ...state.battle.log].slice(-LOG_LIMIT);
-    return { screen: toBattleView(state.battle, state.potions), log, seed: state.seed };
+    return { screen: toBattleView(state.battle, state.potions, state.owned), log, seed: state.seed };
   }
 
   const log = [...state.log];
 
   const run = state.run;
   if (run) {
-    return { screen: toDungeonView(run, state.potions, state.roster), log, seed: state.seed };
+    return { screen: toDungeonView(run, state.potions, state.owned), log, seed: state.seed };
   }
 
   return { screen: toTownView(state), log, seed: state.seed };
