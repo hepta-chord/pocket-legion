@@ -23,7 +23,6 @@ import {
   useSkill,
   whyCannotUse,
   type BattleState,
-  type EnemyAction,
   type EnemyDef,
   type EnemyState,
   type Fighter,
@@ -37,7 +36,7 @@ import {
   skillLabels,
   type CharacterEntry,
 } from './data/characters';
-import { generateCommon } from './data/common-gen';
+import { generateCommon, NAME_POOLS } from './data/common-gen';
 import { NOTHING_TRAP_CHANCE, TREASURE_TRAP_CHANCE } from './data/events';
 import { FACTION_HIRE_CAP, FACTION_NAMES, FACTION_WEIGHT, FACTIONS, type Faction } from './data/factions';
 import { makeBoss, makeFoe } from './data/enemies';
@@ -83,12 +82,14 @@ import type {
 
 // レベル・成長カーブ・酒場の引き直し賃料などを GameState/CharacterEntry に足したので、
 // 古いセーブと噛み合わなくなる。区切りを上げて捨てる
-export const SAVE_VERSION = 10;
+export const SAVE_VERSION = 11;
 
 /** 回復薬の所持上限 */
 const POTION_MAX = 3;
 /** 出撃開始時の所持金。コモン 2 人を雇って 60 残る水準 */
 const START_GOLD = 300;
+/** 初期所持の回復薬。道具屋で買い足せるので 0 にはしない */
+const START_POTIONS = 1;
 /** 酒場の品揃えの人数 */
 const TAVERN_SIZE = 3;
 /** 酒場の品揃えに未所持レアを混ぜる確率。低確率の当たり枠にする */
@@ -97,6 +98,10 @@ const TAVERN_RARE_CHANCE = 0.15;
 const TAVERN_REROLL_BASE = 60;
 /** 引き直すたびに賃料を上げる倍率。粘るほど高くつく形にする。出撃を終えると初期値に戻す */
 const TAVERN_REROLL_RAISE = 1.5;
+/** 道具屋の回復薬の値段の初期値。酒場の引き直し賃と同じ考え方 (買うたびに上がり、出撃で戻る) */
+const POTION_PRICE_BASE = 80;
+/** 回復薬を買うたびに値段を上げる倍率 */
+const POTION_PRICE_RAISE = 1.5;
 
 /** 戦闘に勝ったときの経験値の基準値。深度が深いほど、強敵・ボスほど多く入る */
 const EXP_BASE = { battle: 8, elite: 16, boss: 50 } as const;
@@ -114,6 +119,8 @@ export type Action =
   | { type: 'hire'; id: string }
   /** 酒場の品揃えを金を払って引き直す。賃料は state.tavernRerollCost */
   | { type: 'reroll-tavern' }
+  /** 道具屋で回復薬を 1 個買う。値段は state.potionPrice */
+  | { type: 'buy-potion' }
   | { type: 'potion' }
   /** 拠点の編成画面。所持キャラの一覧から前衛スロットへ配置する。id が null ならそのスロットを空にする */
   | { type: 'formation-set'; slot: number; id: string | null }
@@ -139,8 +146,8 @@ export interface GameState {
   /** 回復薬の所持数。上限 POTION_MAX */
   potions: number;
   /**
-   * 所持キャラそのもの。hero と mate は常に含む。
-   * 固定のレア・主人公・相棒は CHARACTERS の定義をそのまま積む一方、
+   * 所持キャラそのもの。hero (コーモン)・mate (スケサン)・aide2 (カクサン) の固定 3 人は常に含む。
+   * 固定のレア・固定の 3 人は CHARACTERS の定義をそのまま積む一方、
    * 生成コモンは生成した個体そのもの (id・名前・スキル・パッシブ・数値) を積む。
    * 「id で引き直す」経路を持たないので、生成コモンも所持した後は同じ個体のまま残る
    */
@@ -175,6 +182,11 @@ export interface GameState {
    * 出撃を終えると初期値 (TAVERN_REROLL_BASE) に戻る (粘りすぎを牽制しつつ、出撃間は仕切り直す)
    */
   tavernRerollCost: number;
+  /**
+   * 道具屋で回復薬を買う今の値段。買うたびに上がり (POTION_PRICE_RAISE)、
+   * 出撃を終えると初期値 (POTION_PRICE_BASE) に戻る (酒場の引き直し賃料と同じ考え方)
+   */
+  potionPrice: number;
   /** 解放済みの区画。ボスを倒すと 1 つ増える */
   unlocked: number;
   /**
@@ -203,14 +215,34 @@ function hasUnownedRare(owned: readonly CharacterEntry[], source: 'tavern' | 'du
   return unownedRares(owned, source).length > 0;
 }
 
-/** 陣営ごとの所持人数。主人公・相棒は最初からいる例外で、雇用の上限には数えない */
+/** 固定の 3 人 (コーモン・スケサン・カクサン) の id。所持から外れず、雇用の上限にも数えない */
+const FIXED_MEMBER_IDS = new Set(['hero', 'mate', 'aide2']);
+
+/** 陣営ごとの所持人数。固定の 3 人は最初からいる例外で、雇用の上限には数えない */
 function factionCount(owned: readonly CharacterEntry[], faction: Faction): number {
-  return owned.filter((c) => c.faction === faction && c.id !== 'hero' && c.id !== 'mate').length;
+  return owned.filter((c) => c.faction === faction && !FIXED_MEMBER_IDS.has(c.id)).length;
 }
 
 /** まだ雇用の上限に達していない陣営の一覧。上限に達した陣営は酒場の抽選から外す */
 function availableFactions(owned: readonly CharacterEntry[]): Faction[] {
   return FACTIONS.filter((f) => factionCount(owned, f) < FACTION_HIRE_CAP[f]);
+}
+
+/** faction の名前候補 (NAME_POOLS) に、まだ usedNames に無いものが 1 つでも残っているか */
+function hasFreeName(faction: Faction, usedNames: ReadonlySet<string>): boolean {
+  return NAME_POOLS[faction].some((n) => !usedNames.has(n));
+}
+
+/**
+ * 酒場の抽選で誰も並べられない状態か。雇用の上限に達した陣営に加えて、
+ * 名前の候補が (所持済みぶんも合わせて) 尽きた陣営も対象から外れる。
+ * 未所持の酒場限定レアも無ければ、引き直しても誰も出てこない
+ * (不具合の修正: 所持済みキャラの名前が酒場の候補から除かれていなかった)
+ */
+function tavernExhausted(owned: readonly CharacterEntry[]): boolean {
+  if (hasUnownedRare(owned, 'tavern')) return false;
+  const usedNames = new Set(owned.map((c) => c.name));
+  return FACTIONS.every((f) => factionCount(owned, f) >= FACTION_HIRE_CAP[f] || !hasFreeName(f, usedNames));
 }
 
 /** 陣営の人口比 (FACTION_WEIGHT) で重み付けした抽選。pool は空でないこと */
@@ -265,12 +297,16 @@ function pickCommonAvoidingDuplicates(
  * ただし品揃え内で散らす)、低確率 (TAVERN_RARE_CHANCE) で source: 'tavern' の未所持レアに
  * 差し替える。レア・コモンを問わず、酒場の 1 回の品揃えの中で同じ人・同じ名前が重複しないようにし、
  * 雇用の上限に達した陣営は並ばせない (達していれば TAVERN_SIZE 未満で終わることもある)。
- * 並ぶ個体の初期レベルもここでランダムに振る
+ * 並ぶ個体の初期レベルもここでランダムに振る。
+ *
+ * usedNames は所持済みキャラの名前で種を撒く (不具合の修正)。これが無いと「今の品揃えの中」
+ * だけで重複を避ける形になり、既に所持している名前の別個体が何度も並んでしまう
+ * (プレイヤーには同じキャラが重複しているように見える)。
  */
 function rerollTavern(state: GameState, rng: Rng): void {
   const picked: CharacterEntry[] = [];
   const usedRareIds = new Set<string>();
-  const usedNames = new Set<string>();
+  const usedNames = new Set<string>(state.owned.map((c) => c.name));
   const usedFactions = new Set<Faction>();
   for (let i = 0; i < TAVERN_SIZE; i++) {
     const rareCandidates = unownedRares(state.owned, 'tavern').filter(
@@ -285,8 +321,10 @@ function rerollTavern(state: GameState, rng: Rng): void {
       picked.push(rare);
       continue;
     }
-    const available = availableFactions(state.owned);
-    if (available.length === 0) break; // 全陣営が雇用の上限に達している。品揃えが減る
+    // 雇用の上限に達した陣営に加えて、名前の候補が (所持済みぶんも合わせて) 尽きた陣営も外す
+    // (不具合の修正)。雇用上限を外すのと同じ扱いにする
+    const available = availableFactions(state.owned).filter((f) => hasFreeName(f, usedNames));
+    if (available.length === 0) break; // 誰も並べられない。品揃えが減る (最悪 0 人になる)
     const common = pickCommonAvoidingDuplicates(state, rng, usedNames, usedFactions, available);
     common.level = rollTavernLevel(rng, state.unlocked, common.maxLevel);
     usedNames.add(common.name);
@@ -300,18 +338,20 @@ export function newGame(seed: string): GameState {
   const rng = new Rng(hashSeed(seed));
   const hero = instantiate(CHARACTERS.find((c) => c.id === 'hero')!);
   const mate = instantiate(CHARACTERS.find((c) => c.id === 'mate')!);
+  const aide2 = instantiate(CHARACTERS.find((c) => c.id === 'aide2')!);
   const state: GameState = {
     version: SAVE_VERSION,
     seed,
     rngState: rng.state,
     gold: START_GOLD,
-    potions: 0,
-    owned: [hero, mate],
+    potions: START_POTIONS,
+    owned: [hero, mate, aide2],
     nextCommonId: 1,
     formation: emptyFormation(),
     formationTouched: false,
     tavern: [],
     tavernRerollCost: TAVERN_REROLL_BASE,
+    potionPrice: POTION_PRICE_BASE,
     unlocked: 1,
     manaBonus: 0,
     run: null,
@@ -449,7 +489,10 @@ function resolveSpringAlt(state: GameState, run: RunState): string {
   return `泉の力を経験値に変えた。${amount} の経験値が入った。`;
 }
 
-/** 出撃を終える。勝てば戦利品を持ち帰り、負ければその出撃の稼ぎと回復薬を失う。酒場も賃料も仕切り直す */
+/**
+ * 出撃を終える。勝てば戦利品を持ち帰り、負ければその出撃の稼ぎと回復薬を失う。
+ * 酒場も道具屋の値段も仕切り直す (粘りすぎを牽制しつつ、出撃間は仕切り直す)
+ */
 function finishRun(state: GameState, won: boolean, rng: Rng): void {
   const run = state.run;
   if (!run) return;
@@ -458,6 +501,7 @@ function finishRun(state: GameState, won: boolean, rng: Rng): void {
   state.result = { won, depth: run.depth, gold: won ? run.gold : 0 };
   state.run = null;
   state.tavernRerollCost = TAVERN_REROLL_BASE;
+  state.potionPrice = POTION_PRICE_BASE;
   rerollTavern(state, rng);
 }
 
@@ -688,6 +732,17 @@ export function step(state: GameState, action: Action): void {
       break;
     }
 
+    case 'buy-potion': {
+      if (state.run || state.battle) break;
+      if (state.potions >= POTION_MAX) break;
+      if (state.gold < state.potionPrice) break;
+      state.gold -= state.potionPrice;
+      state.potions += 1;
+      state.potionPrice = Math.round(state.potionPrice * POTION_PRICE_RAISE);
+      addLog(state, 'good', '回復薬を買った。');
+      break;
+    }
+
     case 'formation-set': {
       // 拠点の編成画面だけの操作にする。出撃中は state.formation を触らず、
       // 代わりに dungeon-formation-set でその場のデッキを並べ替える
@@ -823,6 +878,8 @@ function skillEffectText(def: ActionSkillDef): string {
       return `ガードを ${e.stacks} 枚積む (1 枚につき被ダメージ -20%、3 枚まで)`;
     case 'barrier':
       return '次に来る敵の攻撃を 1 回無効化';
+    case 'dispel':
+      return '敵の鼓舞・ガードのスタックを 1 回で全部剥がす';
     case 'stun-self':
       return '代償として自分がその場でスタンする';
   }
@@ -865,31 +922,6 @@ function downCountdownLabel(e: EnemyState): string | null {
   return e.downCountdown === null ? null : `ダウン攻撃 あと${e.downCountdown}`;
 }
 
-function stunCountdownLabel(e: EnemyState): string | null {
-  return e.stunCountdown === null ? null : `スタン あと${e.stunCountdown}`;
-}
-
-/**
- * 「次ターン」予告パネル用の短い行動名。大技・ダウン攻撃のターンは総称 (技名は出さない。
- * 技名は状態アイコン側の予告バッジで見せる)、それ以外は通常行動の種類をそのまま言葉にする
- */
-function enemyActionLabel(action: EnemyAction): string {
-  switch (action.kind) {
-    case 'attack':
-      return '攻撃';
-    case 'stun':
-      return 'スタン';
-    case 'cheer':
-      return '鼓舞';
-    case 'ward':
-      return '防御';
-    case 'big':
-      return '大技';
-    case 'downstrike':
-      return 'ダウン攻撃';
-  }
-}
-
 function toBattleView(b: BattleState, potions: number, owned: readonly CharacterEntry[]): BattleView {
   const e = b.enemy;
   return {
@@ -920,11 +952,15 @@ function toBattleView(b: BattleState, potions: number, owned: readonly Character
       bigCountdown: e.bigCountdown,
       bigLabel: bigCountdownLabel(e),
       downLabel: downCountdownLabel(e),
-      stunLabel: stunCountdownLabel(e),
+      // 敵の鼓舞・防御。味方の cheerStacks/wardStacks と同じ形で、状態アイコン列に出す
+      // (今まで battle.ts の計算には入っていたのに画面に出ておらず、効果が無いように見えていた不具合)
+      cheerStacks: e.cheer.stacks,
+      cheerTurns: e.cheer.turns,
+      wardStacks: e.ward.stacks,
+      wardTurns: e.ward.turns,
       alive: e.hp > 0,
       isBoss: e.def.isBoss,
     },
-    nextActionLabels: e.hp > 0 ? e.nextActions.map(enemyActionLabel) : [],
     slots: b.party.front.map((f, slot) => {
       if (!f) return null;
       return {
@@ -1097,7 +1133,12 @@ function toTownView(state: GameState): TownView {
       return { ...characterCard(entry, factionMultiplier(totals, entry.faction)), price, affordable: state.gold >= price };
     }),
     rerollCost: state.tavernRerollCost,
-    rerollAffordable: state.gold >= state.tavernRerollCost,
+    // 金が足りないときに加えて、引き直しても誰も出てこない (tavernExhausted) ときも押せなくする。
+    // 押しても何も変わらないボタンを活かしておく意味が無いため (不具合の修正)
+    rerollAffordable: state.gold >= state.tavernRerollCost && !tavernExhausted(state.owned),
+    potionPrice: state.potionPrice,
+    potionMax: POTION_MAX,
+    potionBuyable: state.potions < POTION_MAX && state.gold >= state.potionPrice,
     roster: state.owned.map((entry) => characterCard(entry, factionMultiplierOf(totals, entry))),
     formation,
   };

@@ -22,10 +22,13 @@ import {
   useSkill,
   vanguardMultiplier,
   whyCannotUse,
+  type ActionSlot,
+  type EnemyAction,
   type EnemyDef,
   type Fighter,
 } from './battle';
 import { buildFighter, type CharacterEntry } from './data/characters';
+import { makeBoss } from './data/enemies';
 import type { Faction } from './data/factions';
 import type { ActionSkillDef, PassiveDef } from './data/skills';
 import { Rng } from './rng';
@@ -160,6 +163,11 @@ function fighter(id: string, faction: Faction = 'kingdom', skills: ActionSkillDe
   };
 }
 
+/** 行動枠 1 つを「必ずこの行動」にする (重み 1 だけの枠)。テストで決め打ちの行動をさせたいときに使う */
+function fixedSlot(action: EnemyAction): ActionSlot {
+  return [{ action, weight: 1 }];
+}
+
 function enemy(over: Partial<EnemyDef> = {}): EnemyDef {
   return {
     id: 'e',
@@ -174,16 +182,25 @@ function enemy(over: Partial<EnemyDef> = {}): EnemyDef {
     downEvery: null,
     stunEvery: null,
     stunRange: { min: 1, max: 1 },
-    pattern: [{ kind: 'attack' }],
+    slots: [fixedSlot({ kind: 'attack' })],
     groupSize: 1,
     isBoss: false,
     ...over,
   };
 }
 
-/** ボス。デフォルトでは大技・ダウン攻撃・スタンを起こさない間隔にしておき、テストごとに個別に短くする */
+/**
+ * ボス。デフォルトでは大技・ダウン攻撃・スタンを起こさない間隔にしておき、テストごとに個別に短くする。
+ * 行動枠は本番 (bossSlots) と同じく 2 枠を持たせ、既定では両方とも決め打ちの攻撃にする
+ */
 function boss(over: Partial<EnemyDef> = {}): EnemyDef {
-  return enemy({ isBoss: true, downEvery: null, stunEvery: null, ...over });
+  return enemy({
+    isBoss: true,
+    downEvery: null,
+    stunEvery: null,
+    slots: [fixedSlot({ kind: 'attack' }), fixedSlot({ kind: 'attack' })],
+    ...over,
+  });
 }
 
 function battleOf(front: Fighter[], reserve: Fighter[] = [], foe: EnemyDef = enemy(), rng: Rng = new Rng(1)) {
@@ -598,9 +615,9 @@ describe('予告', () => {
 
 describe('次ターンの行動予告 (nextActions)', () => {
   it('雑魚は 1 個、ボスは 2 個の行動を戦闘開始時から持っている', () => {
-    const foe = battleOf([fighter('a')], [], enemy({ bigEvery: 99, pattern: [{ kind: 'attack' }] })).enemy.nextActions;
+    const foe = battleOf([fighter('a')], [], enemy({ bigEvery: 99 })).enemy.nextActions;
     expect(foe).toHaveLength(1);
-    const bossState = battleOf([fighter('a')], [], boss({ bigEvery: 99, pattern: [{ kind: 'attack' }] }));
+    const bossState = battleOf([fighter('a')], [], boss({ bigEvery: 99 }));
     expect(bossState.enemy.nextActions).toHaveLength(2);
   });
 
@@ -613,11 +630,52 @@ describe('次ターンの行動予告 (nextActions)', () => {
   });
 
   it('ターン終了のたびに次ターンぶんへ引き直される', () => {
-    const state = battleOf([fighter('a')], [], enemy({ bigEvery: 99, pattern: [{ kind: 'attack' }] }));
+    const state = battleOf([fighter('a')], [], enemy({ bigEvery: 99 }));
     const before = state.enemy.nextActions;
     endTurn(state, new Rng(1));
     expect(state.enemy.nextActions).not.toBe(before); // 新しい配列に差し替わっている
-    expect(state.enemy.nextActions).toEqual([{ kind: 'attack' }]); // パターンが 1 種類だけなので中身は変わらない
+    expect(state.enemy.nextActions).toEqual([{ kind: 'attack' }]); // 行動枠が 1 種類だけの決め打ちなので中身は変わらない
+  });
+});
+
+describe('行動枠 (重み付き抽選)', () => {
+  it('makeBoss の枠 1 (攻撃9:何もしない1) はおよそ 9 割が攻撃になる (統計)', () => {
+    // attack を 0 にして、パーティが被弾で全滅しないようにする (全滅すると outcome が
+    // 'ongoing' でなくなり、以後 endTurn が no-op になって nextActions が引き直されなくなるため)
+    const def = makeBoss(1, new Rng(1));
+    const foe: EnemyDef = { ...def, attack: 0, bigEvery: 99, downEvery: null, stunEvery: null };
+    const state = battleOf([fighter('a')], [], foe, new Rng(1));
+    const rng = new Rng(7);
+    let attacks = 0;
+    let total = 0;
+    for (let i = 0; i < 1000; i++) {
+      // 枠 1 だけを見る (枠 2 は自己強化が混ざるので統計を汚す)
+      total += 1;
+      if (state.enemy.nextActions[0]?.kind === 'attack') attacks += 1;
+      // 上限による偏りを避けるため、鼓舞・ガードのスタックを毎ターンリセットしてから進める
+      state.enemy.cheer.stacks = 0;
+      state.enemy.ward.stacks = 0;
+      endTurn(state, rng);
+    }
+    const ratio = attacks / total;
+    expect(ratio).toBeGreaterThan(0.8);
+    expect(ratio).toBeLessThan(1.0);
+  });
+
+  it('全ての枠が「何もしない」を引いたターンは無く、必ず何かが起きる', () => {
+    const foe = boss({
+      attack: 0,
+      bigEvery: 99,
+      downEvery: null,
+      stunEvery: null,
+      slots: [fixedSlot({ kind: 'none' }), fixedSlot({ kind: 'none' })],
+    });
+    const state = battleOf([fighter('a')], [], foe, new Rng(1));
+    const rng = new Rng(3);
+    for (let i = 0; i < 50; i++) {
+      expect(state.enemy.nextActions.some((a) => a.kind !== 'none')).toBe(true);
+      endTurn(state, rng);
+    }
   });
 });
 
@@ -919,9 +977,9 @@ describe('全体攻撃と群れの規模', () => {
 
 describe('ボスの通常行動 2 回', () => {
   it('大技・ダウン攻撃のターン以外は通常行動を 2 回行う', () => {
-    // pattern を attack だけにして、2 回攻撃したぶんだけ被害が乗ることを見る
-    const foe = boss({ attack: 100, bigEvery: 99, downEvery: null, pattern: [{ kind: 'attack' }] });
-    const single = enemy({ attack: 100, bigEvery: 99, downEvery: null, pattern: [{ kind: 'attack' }], isBoss: false });
+    // 行動枠を決め打ちの attack だけにして、2 回攻撃したぶんだけ被害が乗ることを見る
+    const foe = boss({ attack: 100, bigEvery: 99, downEvery: null });
+    const single = enemy({ attack: 100, bigEvery: 99, downEvery: null, isBoss: false });
 
     const bossState = battleOf([fighter('a')], [], foe);
     endTurn(bossState, new Rng(1));

@@ -42,6 +42,7 @@ import { buildFighter, CHARACTERS, withLevel, type CharacterEntry } from '../dat
 import { generateCommon } from '../data/common-gen';
 import { makeBoss, makeFoe } from '../data/enemies';
 import { FACTION_HIRE_CAP, FACTION_WEIGHT, FACTIONS, type Faction } from '../data/factions';
+import { sectorById } from '../data/sectors';
 import { Rng } from '../rng';
 import { factionMultiplier, factionMultiplierOf, factionTotals, type FactionTotals } from '../roster';
 
@@ -222,25 +223,25 @@ const BOSS_TURN_CAP = 200;
  * @param assumedLevel 出撃前に全員へ振る「想定レベル」。区画ごとに決め打ちで測る
  * (浅層 1、中層 10、深層 20 など。docs/batch-growth.md 7 節)。CHARACTERS は共有オブジェクトなので、
  * withLevel で独立したコピーを作ってからレベルを振る (他の測定・他のプレイへ漏れないように)
- * @param assumedOwnedCount 出撃前に持たせる想定の所持人数 (hero/mate を含む)。所持ベースの陣営倍率
- * (roster.ts) は所持人数で決まるので、レベルだけ振っても中盤以降の実態と合わない
+ * @param assumedOwnedCount 出撃前に持たせる想定の所持人数 (固定の 3 人 hero/mate/aide2 を含む)。
+ * 所持ベースの陣営倍率 (roster.ts) は所持人数で決まるので、レベルだけ振っても中盤以降の実態と合わない
  * (docs/batch-faction.md 4 節。浅層 5・中層 12・深層 20 が初期値)
  */
-export function playSortie(
-  sectorId: number,
-  startDepth: number,
-  rng: Rng,
-  assumedLevel: number,
-  assumedOwnedCount: number,
-): SortieResult {
-  // 出撃開始時: hero + mate + 想定所持人数ぶんのコモン (酒場・道中の加入をまとめて先取りした形。
+export function playSortie(sectorId: number, rng: Rng, assumedLevel: number, assumedOwnedCount: number): SortieResult {
+  // 区画の開始深度 (Sector.from) から測る。以前はここに区画ごとの開始深度を決め打ちで渡していたが、
+  // 実装側 (run.ts の startRun) が Sector.from を見ずに深度 1 から始まる不具合を抱えていて、
+  // 計測と実装が別の値を見ていた。Sector.from を直接引くことで両者を同じ値に揃える (不具合の修正)。
+  // +1 するのは「区画に入った直後の 1 歩目」を最初の 1 戦に見立てるため (元の決め打ち値と同じ考え方)
+  const startDepth = sectorById(sectorId).from + 1;
+  // 出撃開始時: hero + mate + aide2 + 想定所持人数ぶんのコモン (酒場・道中の加入をまとめて先取りした形。
   // 陣営は人口比の重みで、雇用上限に沿って生成する)
   const hero = withLevel(CHARACTERS.find((c) => c.id === 'hero')!, assumedLevel);
   const mate = withLevel(CHARACTERS.find((c) => c.id === 'mate')!, assumedLevel);
-  const startCommons = generateAssumedOwned(rng, assumedLevel, Math.max(0, assumedOwnedCount - 2));
-  // レアは有限 (4 人) なので、ボス前の分岐で引いた分だけ所持 id を追う
+  const aide2 = withLevel(CHARACTERS.find((c) => c.id === 'aide2')!, assumedLevel);
+  const startCommons = generateAssumedOwned(rng, assumedLevel, Math.max(0, assumedOwnedCount - 3));
+  // レアは有限 (r1〜r4 の 4 人) なので、ボス前の分岐で引いた分だけ所持 id を追う
   const ownedRareIds = new Set<string>();
-  const initial: CharacterEntry[] = [hero, mate, ...startCommons];
+  const initial: CharacterEntry[] = [hero, mate, aide2, ...startCommons];
   // 所持ベースの陣営倍率は出撃時に一度だけ確定させる。以降の recruit・レア加入も
   // この時点の合算 (initialTotals) を近似の土台にする (加入のたびに数え直すほどの精度は測定に要らない)
   const initialTotals = factionTotals(initial);
@@ -293,12 +294,14 @@ export function playSortie(
     refillFront(party);
   }
 
-  // ボス前の分岐イベント。HP が 6 割未満なら回復、以上ならレア加入を選ぶ
+  // ボス前の分岐イベント。HP が 6 割未満なら回復、以上ならレア加入を選ぶ。
+  // source: 'dungeon' の未所持レアだけが対象 (game.ts の unownedRares と同じ絞り込み)。
+  // 固定の 3 人 (hero/mate/aide2) は source を持たないので、ここでは自然に除外される
   if (hp < maxHp * 0.6) {
     hp = maxHp;
     resetSortieProgress(party);
   } else {
-    const rareCandidates = CHARACTERS.filter((c) => c.rarity === 'rare' && !ownedRareIds.has(c.id));
+    const rareCandidates = CHARACTERS.filter((c) => c.rarity === 'rare' && c.source === 'dungeon' && !ownedRareIds.has(c.id));
     if (rareCandidates.length > 0) {
       const picked = withLevel(rng.pick(rareCandidates), assumedLevel);
       ownedRareIds.add(picked.id);
@@ -357,7 +360,6 @@ export interface SectorReport {
 export function measure(
   label: string,
   sectorId: number,
-  startDepth: number,
   sorties: number,
   seed: number,
   assumedLevel: number,
@@ -375,7 +377,7 @@ export function measure(
   let bossWins = 0;
   let bossTurns = 0;
   for (let i = 0; i < sorties; i++) {
-    const r = playSortie(sectorId, startDepth, rng, assumedLevel, assumedOwnedCount);
+    const r = playSortie(sectorId, rng, assumedLevel, assumedOwnedCount);
     // 雑魚で倒れた出撃はボスに挑めていないので、ボスの平均から外す
     if (r.bossTurns > 0) {
       bossTries += 1;
