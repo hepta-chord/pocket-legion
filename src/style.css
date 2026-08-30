@@ -350,7 +350,13 @@ button:active:not(:disabled) {
 
 #controls button {
   flex: 1;
-  min-height: 44px;
+  /*
+   * min-height を固定値 (44px) にすると、戦闘・探索の 4 個ボタン (例: ターン終了 / 防御 /
+   * 回復薬 / 編成) の合計が #cluster の高さ (148px) を超え、4 個目の「編成」が
+   * ステージ外へはみ出して見えなくなる (スクロールなしレイアウトなので隠れたまま拾えない)。
+   * min-height を立てず flex:1 だけに任せれば、ボタン数がいくつでも 148px にきっちり収まる
+   */
+  min-height: 0;
   font-size: 12px;
   text-align: center;
   padding: 4px;

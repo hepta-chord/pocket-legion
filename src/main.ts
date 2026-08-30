@@ -111,11 +111,37 @@ function statusSpan(text: string): HTMLSpanElement {
   return el;
 }
 
+/** HP バー (数値併記)。パーティ用・敵用の両方で使う共通部品 */
+function hpGroup(label: string, hp: number, maxHp: number, cls = ''): HTMLElement {
+  const wrap = document.createElement('span');
+  wrap.className = 'hp-group' + (cls ? ` ${cls}` : '');
+  const text = document.createElement('span');
+  text.textContent = `${label} ${hp}/${maxHp}`;
+  const track = document.createElement('span');
+  track.className = 'hp-track';
+  const fill = document.createElement('span');
+  fill.className = 'hp-fill';
+  const pct = maxHp > 0 ? Math.max(0, Math.min(100, (hp / maxHp) * 100)) : 0;
+  fill.style.width = `${pct}%`;
+  track.append(fill);
+  wrap.append(text, track);
+  return wrap;
+}
+
+/** マナを ●●●○○○○○○○ の丸の列にする。現在値まで塗り、上限まで空丸 */
+function manaDots(mana: number, cap: number): string {
+  const filled = Math.max(0, Math.min(cap, mana));
+  return '●'.repeat(filled) + '○'.repeat(Math.max(0, cap - filled));
+}
+
 function renderStatus(vm: ViewModel): void {
   status.innerHTML = '';
   const s = vm.screen;
   if (s.kind === 'battle') {
-    status.append(statusSpan(`HP ${s.hp}/${s.maxHp}`), statusSpan(`マナ ${s.mana}/${s.manaCap}`), statusSpan(`ターン ${s.turn}`));
+    const mana = document.createElement('span');
+    mana.className = 'mana-dots';
+    mana.textContent = `マナ ${manaDots(s.mana, s.manaCap)}`;
+    status.append(hpGroup('HP', s.hp, s.maxHp), mana, statusSpan(`ターン ${s.turn}`));
   } else if (s.kind === 'dungeon') {
     status.append(statusSpan(`HP ${s.hp}/${s.maxHp}`), statusSpan(`${s.sectorName} 深度 ${s.depth}/${s.goal}`));
   } else if (s.kind === 'town') {
@@ -242,10 +268,19 @@ function renderPortrait(vm: ViewModel): void {
   const name = document.createElement('p');
   name.className = 'enemy-name';
   name.textContent = e.groupSize > 1 ? `${e.name} (${e.groupSize})` : e.name;
-  const hp = document.createElement('p');
-  hp.className = 'enemy-hp';
-  hp.textContent = e.alive ? `HP ${e.hp}/${e.maxHp}` : '撃破';
-  info.append(name, hp);
+  info.append(name);
+
+  const hpWrap = document.createElement('div');
+  hpWrap.className = 'enemy-hp-wrap';
+  if (e.alive) {
+    hpWrap.append(hpGroup('HP', e.hp, e.maxHp, 'enemy'));
+  } else {
+    const hp = document.createElement('p');
+    hp.className = 'enemy-hp';
+    hp.textContent = '撃破';
+    hpWrap.append(hp);
+  }
+  info.append(hpWrap);
   portraitEl.append(info);
 
   const art = document.createElement('pre');
@@ -265,23 +300,23 @@ function badge(text: string, cls = ''): HTMLElement {
 }
 
 function renderIcons(vm: ViewModel): void {
-  iconsLeft.innerHTML = '';
-  iconsRight.innerHTML = '';
+  iconsEnemy.innerHTML = '';
+  iconsAlly.innerHTML = '';
   if (vm.screen.kind !== 'battle') return;
   const s = vm.screen;
 
-  // 左: 味方の状態。0 や無しのときは出さない
-  if (s.guard > 0) iconsLeft.append(badge(`ガ${s.guard}`));
-  if (s.barrier) iconsLeft.append(badge('バリア'));
-  if (s.combo > 0) iconsLeft.append(badge(`コンボ${s.combo}`, 'warn'));
-  if (s.buff > 0) iconsLeft.append(badge('支援', 'warn'));
+  // ステージ下端: 味方の状態を横一列で。0 や無しのときは出さない
+  if (s.guard > 0) iconsAlly.append(badge(`防${s.guard}`));
+  if (s.barrier) iconsAlly.append(badge('バリア'));
+  if (s.combo > 0) iconsAlly.append(badge(`コンボ${s.combo}`, 'warn'));
+  if (s.buff > 0) iconsAlly.append(badge('支援', 'warn'));
 
-  // 右: 敵の状態。耐性・大技の予告・ボスの印
+  // ステージ上端: 敵の状態を横一列で。耐性・大技の予告・ボスの印
   const e = s.enemy;
   if (e.alive) {
-    if (e.resist) iconsRight.append(badge(e.resist === '物理' ? '物理耐' : '魔法耐'));
-    iconsRight.append(badge(`大${e.countdown}`, e.countdown === 1 ? 'warn' : ''));
-    if (e.isBoss) iconsRight.append(badge('ボス', 'boss'));
+    if (e.resist) iconsEnemy.append(badge(e.resist === '物理' ? '物理耐' : '魔法耐'));
+    iconsEnemy.append(badge(`大${e.countdown}`, e.countdown === 1 ? 'warn' : ''));
+    if (e.isBoss) iconsEnemy.append(badge('ボス', 'boss'));
   }
 }
 
@@ -391,7 +426,8 @@ function battleSwapSlotCard(s: BattleView, slotIndex: number): HTMLElement {
 // ---------------------------------------------------------------------------
 // ピッカー (編成の候補一覧・戦闘の交代一覧)
 //
-// リスト行はタップで詳細 (スキル・パッシブの効果) を展開するアコーディオンにする。
+// 一覧の上部に陣営の絞り込みボタンを置く。行はタップで詳細ポップアップ (モーダル) を開く。
+// 行内で展開するアコーディオンだとボタンが見切れて読みにくいので、詳細は別レイヤーに出す。
 // 候補が多くなっても外側の #app 自体はスクロールさせたくないので、
 // #picker はフルスクリーンの重ねものにして、内部の一覧だけスクロールを許す
 
@@ -416,38 +452,10 @@ function buildPickerRow(c: FormationCharacterView & { placedSlot: number | null 
     head.append(placed);
   }
   head.addEventListener('click', () => {
-    pickerExpanded = pickerExpanded === c.id ? null : c.id;
+    detailRow = c;
     render();
   });
   row.append(head);
-
-  if (pickerExpanded === c.id) {
-    const detail = document.createElement('div');
-    detail.className = 'picker-detail';
-    for (const sk of c.skillDetails) {
-      const p = document.createElement('p');
-      p.className = 'picker-skill';
-      const note = sk.note ? ` (${sk.note})` : '';
-      p.textContent = `${sk.name} [${sk.category} ${sk.cost}] ${sk.effect}${note}`;
-      detail.append(p);
-    }
-    for (const p of c.passiveDetails) {
-      const el = document.createElement('p');
-      el.className = 'picker-passive';
-      el.textContent = `${p.name}: ${p.effect}`;
-      detail.append(el);
-    }
-    const place = document.createElement('button');
-    place.type = 'button';
-    place.textContent = 'この枠に配置';
-    place.addEventListener('click', () => {
-      const onPick = picker!.onPick;
-      closePicker();
-      onPick(c.id);
-    });
-    detail.append(place);
-    row.append(detail);
-  }
   return row;
 }
 
@@ -466,6 +474,26 @@ function renderPicker(): void {
   title.textContent = picker.title;
   header.append(title, navButton('閉じる', () => { closePicker(); render(); }));
   pickerEl.append(header);
+
+  // 陣営の絞り込み。該当キャラがいない陣営は押せない
+  const filterRow = document.createElement('div');
+  filterRow.className = 'picker-filter';
+  const options: ('all' | Faction)[] = ['all', ...FACTIONS];
+  for (const f of options) {
+    const label = f === 'all' ? '全て' : FACTION_NAMES[f];
+    const hasAny = f === 'all' || picker.rows.some((r) => r.faction === FACTION_NAMES[f]);
+    const btn = navButton(
+      label,
+      () => {
+        pickerFactionFilter = f;
+        render();
+      },
+      !hasAny,
+    );
+    if (pickerFactionFilter === f) btn.classList.add('active');
+    filterRow.append(btn);
+  }
+  pickerEl.append(filterRow);
 
   const list = document.createElement('div');
   list.className = 'picker-list';
@@ -486,8 +514,84 @@ function renderPicker(): void {
     list.append(row);
   }
 
-  for (const c of picker.rows) list.append(buildPickerRow(c));
+  const filtered =
+    pickerFactionFilter === 'all'
+      ? picker.rows
+      : picker.rows.filter((r) => r.faction === FACTION_NAMES[pickerFactionFilter as Faction]);
+  for (const c of filtered) list.append(buildPickerRow(c));
   pickerEl.append(list);
+}
+
+/** 詳細ポップアップ (モーダル)。名前・陣営・レアリティ・攻撃力・体力・スキル 2 つの詳細・パッシブを出す */
+function renderDetailModal(): void {
+  detailModalEl.innerHTML = '';
+  if (!detailRow || !picker) {
+    detailModalEl.hidden = true;
+    return;
+  }
+  detailModalEl.hidden = false;
+  const c = detailRow;
+
+  const card = document.createElement('div');
+  card.className = 'modal-card';
+
+  const head = document.createElement('div');
+  head.className = 'modal-head';
+  const title = document.createElement('p');
+  title.className = 'modal-title';
+  title.textContent = `${c.name} (${c.faction} / ${rarityLabel(c.rarity)})`;
+  head.append(title);
+  card.append(head);
+
+  const scroll = document.createElement('div');
+  scroll.className = 'modal-scroll';
+  const stats = document.createElement('p');
+  stats.className = 'card-sub';
+  stats.textContent = `攻撃 ${c.attack} ・ 体力 ${c.vitality}`;
+  scroll.append(stats);
+  if (c.placedSlot !== null) {
+    const placed = document.createElement('p');
+    placed.className = 'card-sub placed';
+    placed.textContent = `配置中: 前衛 ${c.placedSlot + 1}`;
+    scroll.append(placed);
+  }
+  for (const sk of c.skillDetails) {
+    const p = document.createElement('p');
+    p.className = 'picker-skill';
+    const note = sk.note ? ` (${sk.note})` : '';
+    p.textContent = `${sk.name} [${sk.category} ${sk.cost}] ${sk.effect}${note}`;
+    scroll.append(p);
+  }
+  for (const p of c.passiveDetails) {
+    const el = document.createElement('p');
+    el.className = 'picker-passive';
+    el.textContent = `${p.name}: ${p.effect}`;
+    scroll.append(el);
+  }
+  card.append(scroll);
+
+  const actions = document.createElement('div');
+  actions.className = 'modal-actions';
+  const place = document.createElement('button');
+  place.type = 'button';
+  place.textContent = 'この枠に配置';
+  place.addEventListener('click', () => {
+    const onPick = picker!.onPick;
+    const id = c.id;
+    closePicker();
+    onPick(id);
+  });
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.textContent = '閉じる';
+  close.addEventListener('click', () => {
+    detailRow = null;
+    render();
+  });
+  actions.append(place, close);
+  card.append(actions);
+
+  detailModalEl.append(card);
 }
 
 function openTownFormationPicker(s: TownView, slot: number): void {
@@ -497,7 +601,8 @@ function openTownFormationPicker(s: TownView, slot: number): void {
     allowClear: true,
     onPick: (id) => act({ type: 'formation-set', slot, id }),
   };
-  pickerExpanded = null;
+  pickerFactionFilter = 'all';
+  detailRow = null;
   render();
 }
 
@@ -508,7 +613,8 @@ function openDungeonFormationPicker(s: DungeonView, slot: number): void {
     allowClear: true,
     onPick: (id) => act({ type: 'dungeon-formation-set', slot, id }),
   };
-  pickerExpanded = null;
+  pickerFactionFilter = 'all';
+  detailRow = null;
   render();
 }
 
@@ -526,7 +632,8 @@ function openBattleSwapPicker(s: BattleView, slot: number): void {
       render();
     },
   };
-  pickerExpanded = null;
+  pickerFactionFilter = 'all';
+  detailRow = null;
   render();
 }
 
@@ -554,7 +661,7 @@ function renderBattleCluster(s: BattleView): void {
   s.slots.forEach((slot, i) => slotsEl.append(battleSlotCard(slot, i)));
 
   controlsEl.append(actionButton('ターン終了', { type: 'battle-end-turn' }));
-  controlsEl.append(actionButton(`ガード (${s.guard}/${s.guardMax})`, { type: 'battle-guard' }, !s.canGuard));
+  controlsEl.append(actionButton(`防御 (${s.guard}/${s.guardMax})`, { type: 'battle-guard' }, !s.canGuard));
   controlsEl.append(actionButton(`回復薬 (${s.potions})`, { type: 'potion' }, s.potions <= 0));
   const swapDisabled = s.swapCooldown > 0 || s.reserve.length === 0;
   controlsEl.append(
@@ -568,6 +675,38 @@ function renderBattleCluster(s: BattleView): void {
       swapDisabled,
     ),
   );
+}
+
+// ---------------------------------------------------------------------------
+// 探索の「進む」演出。約 2 秒かけて通路が 3 歩ぶん流れて見せてから、
+// ゲーム状態 (advance) を進めてログ・イベントを出す。
+// corridor.ts の位相は depth % 4 なので、深度を小数のまま渡せば途中の位相も連続的に描ける。
+// game.ts にはタイマーを持ち込まず、ここ (main.ts) だけで完結させる
+
+const ADVANCE_DURATION_MS = 2000;
+const ADVANCE_STEPS = 3;
+
+function startAdvanceAnimation(vmBefore: ViewModel): void {
+  if (vmBefore.screen.kind !== 'dungeon') return;
+  const screen = vmBefore.screen;
+  const baseDepth = screen.corridor;
+
+  advancing = true;
+  render(); // 操作ボタンを無効化した状態を即座に反映する
+
+  const start = performance.now();
+  const frame = (now: number): void => {
+    const t = Math.min(1, (now - start) / ADVANCE_DURATION_MS);
+    // 通路の描画だけを直接差し替える。render() は呼ばない (呼ぶと通常の corridor に戻ってしまう)
+    renderer.draw({ ...vmBefore, screen: { ...screen, corridor: baseDepth + t * ADVANCE_STEPS } });
+    if (t < 1) {
+      requestAnimationFrame(frame);
+      return;
+    }
+    advancing = false;
+    act({ type: 'advance' });
+  };
+  requestAnimationFrame(frame);
 }
 
 function renderDungeonCluster(s: DungeonView): void {
@@ -585,17 +724,17 @@ function renderDungeonCluster(s: DungeonView): void {
   s.front.forEach((slot) => slotsEl.append(displaySlotCard(slot.character)));
 
   if (s.event) {
-    controlsEl.append(actionButton(s.event.action, { type: 'resolve' }));
-    if (s.event.alt) controlsEl.append(actionButton(s.event.alt, { type: 'resolve-alt' }));
+    controlsEl.append(actionButton(s.event.action, { type: 'resolve' }, advancing));
+    if (s.event.alt) controlsEl.append(actionButton(s.event.alt, { type: 'resolve-alt' }, advancing));
   } else {
-    controlsEl.append(actionButton('進む', { type: 'advance' }));
+    controlsEl.append(navButton('進む', () => startAdvanceAnimation(toViewModel(state)), advancing));
   }
-  controlsEl.append(actionButton('引き返す', { type: 'retreat' }));
-  controlsEl.append(actionButton(`回復薬 (${s.potions})`, { type: 'potion' }, s.potions <= 0));
+  controlsEl.append(actionButton('引き返す', { type: 'retreat' }, advancing));
+  controlsEl.append(actionButton(`回復薬 (${s.potions})`, { type: 'potion' }, advancing || s.potions <= 0));
   controlsEl.append(navButton('編成', () => {
     dungeonFormationOpen = true;
     render();
-  }));
+  }, advancing));
 }
 
 function renderTownCluster(s: TownView): void {
@@ -603,6 +742,7 @@ function renderTownCluster(s: TownView): void {
     s.formation.slots.forEach((slot, i) =>
       slotsEl.append(tappableSlotCard(slot.character, () => openTownFormationPicker(s, i))),
     );
+    controlsEl.append(actionButton('全て外す', { type: 'formation-clear-all' }));
     controlsEl.append(navButton('戻る', () => {
       page = 'home';
       render();
@@ -666,7 +806,10 @@ function render(): void {
     swapPending = [];
   }
   if (vm.screen.kind !== 'town') page = 'home';
-  if (vm.screen.kind !== 'dungeon') dungeonFormationOpen = false;
+  if (vm.screen.kind !== 'dungeon') {
+    dungeonFormationOpen = false;
+    advancing = false;
+  }
 
   stage.dataset.screen = vm.screen.kind;
   renderer.resize();
@@ -679,6 +822,7 @@ function render(): void {
   renderLog(vm);
   renderCluster(vm);
   renderPicker();
+  renderDetailModal();
 }
 
 window.addEventListener('resize', render);
