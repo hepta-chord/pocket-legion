@@ -9,8 +9,14 @@ import type { EnemyAction, EnemyDef } from '../battle';
 import type { Rng } from '../rng';
 import type { Element } from './skills';
 
-/** スタンが巻き込む人数の幅。区画 (浅層/中層/深層) で変える */
-function stunRange(sectorId: number): { min: number; max: number } {
+/**
+ * ボスのスタンが巻き込む人数の幅。区画 (浅層/中層/深層) で変える。
+ *
+ * 複数を巻き込むのはボスだけにする。雑魚が 2 人まとめて気絶させると、
+ * 前衛が 4 人前後の序盤では手番の半分が飛んで、道中がただの事故になる。
+ * 場を荒らす派手さはボス戦にだけ置く。
+ */
+function bossStunRange(sectorId: number): { min: number; max: number } {
   if (sectorId <= 1) return { min: 1, max: 2 };
   if (sectorId === 2) return { min: 1, max: 3 };
   return { min: 2, max: 4 };
@@ -18,13 +24,12 @@ function stunRange(sectorId: number): { min: number; max: number } {
 
 /**
  * 通常戦・強敵の雑魚を深度なりに生成する。elite なら HP と攻撃力を 1.5 倍にする。
- * sectorId はスタンの巻き込み人数の幅にだけ使う (浅層/中層/深層で変える)。
  *
  * ダウン攻撃・スタンは雑魚の一部だけが持つ (docs/plan.md「敵の行動と予告」)。
  * 2 割程度にダウン攻撃、別の 2 割程度にスタンを持たせ、両方持つ個体は作らない
  * (どちらも持たない大半は、大技以外はただ殴るだけの雑魚になる)
  */
-export function makeFoe(depth: number, rng: Rng, elite = false, sectorId = 1): EnemyDef {
+export function makeFoe(depth: number, rng: Rng, elite = false): EnemyDef {
   const groupSize = rng.int(1, Math.min(3, 1 + Math.floor(depth / 5)));
   const mul = elite ? 1.5 : 1;
   // 耐性なしが主で、持ちが出たら苦戦する回にする。
@@ -35,7 +40,10 @@ export function makeFoe(depth: number, rng: Rng, elite = false, sectorId = 1): E
   const specialRoll = rng.next();
   const hasDownstrike = specialRoll < 0.2;
   const hasStun = !hasDownstrike && specialRoll < 0.4;
-  const pattern: EnemyAction[] = hasStun ? [{ kind: 'attack' }, { kind: 'stun', ...stunRange(sectorId) }] : [{ kind: 'attack' }];
+  // 雑魚のスタンは必ず 1 人だけにする (複数はボスの特権)
+  const pattern: EnemyAction[] = hasStun
+    ? [{ kind: 'attack' }, { kind: 'stun', min: 1, max: 1 }]
+    : [{ kind: 'attack' }];
 
   return {
     id: `d${depth}`,
@@ -91,7 +99,12 @@ const BOSS_DOWN_EVERY = 5;
 export function makeBoss(sectorId: number, rng: Rng): EnemyDef {
   const spec = BOSSES[Math.min(sectorId, BOSSES.length) - 1] ?? BOSSES[BOSSES.length - 1];
   const resist: Element = rng.chance(0.5) ? 'physical' : 'magic';
-  const pattern: EnemyAction[] = [{ kind: 'attack' }, { kind: 'stun', ...stunRange(sectorId) }, { kind: 'cheer' }, { kind: 'ward' }];
+  const pattern: EnemyAction[] = [
+    { kind: 'attack' },
+    { kind: 'stun', ...bossStunRange(sectorId) },
+    { kind: 'cheer' },
+    { kind: 'ward' },
+  ];
   return {
     id: `boss-${sectorId}`,
     name: spec.name,

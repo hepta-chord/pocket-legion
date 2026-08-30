@@ -208,7 +208,7 @@ export function playSortie(sectorId: number, startDepth: number, rng: Rng): Sort
     }
     maxHp = partyMaxHp(party);
 
-    const state = startBattle(party, hp, maxHp, makeFoe(depth, rng, false, sectorId), rng);
+    const state = startBattle(party, hp, maxHp, makeFoe(depth, rng, false), rng);
     let turns = 0;
     while (state.outcome === 'ongoing' && turns < TURN_CAP) {
       playTurn(state, rng);
