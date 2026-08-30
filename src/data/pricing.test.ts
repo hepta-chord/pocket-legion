@@ -69,17 +69,19 @@ describe('priceOf', () => {
     expect(rare).toBeGreaterThan(common);
   });
 
-  it('レアはおよそ 400 G 帯、コモンはおよそ 120 G 帯に収まる (現行キャラ定義で確認)', async () => {
-    const { CHARACTERS } = await import('./characters');
-    // hero・mate (スケサン)・aide2 (カクサン) は所持から外れない固定の初期 3 人で
-    // 酒場に並ばないので、酒場向けの値付け想定 (400 G 帯) の対象から外す
-    const rares = CHARACTERS.filter(
-      (c) => c.rarity === 'rare' && c.id !== 'hero' && c.id !== 'mate' && c.id !== 'aide2',
-    );
-    for (const r of rares) {
-      const p = priceOf(r);
-      expect(p).toBeGreaterThan(250);
-      expect(p).toBeLessThan(550);
+  it('レアはおよそ 400 G 帯、コモンはおよそ 120 G 帯に収まる (generateRare/generateCommon で確認)', async () => {
+    // レアは固定の名簿を持たずその場で生成する (docs/plan.md「レアリティと入手」) ので、
+    // 生成した個体そのもので帯を確かめる
+    const { generateCommon, generateRare } = await import('./common-gen');
+    const { Rng } = await import('../rng');
+    const rng = new Rng(2024);
+    for (let i = 0; i < 30; i++) {
+      const rare = priceOf(generateRare('kingdom', rng, i));
+      expect(rare).toBeGreaterThan(250);
+      expect(rare).toBeLessThan(550);
+      const common = priceOf(generateCommon('kingdom', rng, i));
+      expect(common).toBeGreaterThan(60);
+      expect(common).toBeLessThan(220);
     }
   });
 });

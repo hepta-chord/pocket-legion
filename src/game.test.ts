@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CHARACTERS, effectiveAttack, type CharacterEntry } from './data/characters';
+import { effectiveAttack, type CharacterEntry } from './data/characters';
 import { generateCommon, NAME_POOLS } from './data/common-gen';
 import { BOSS_ALT_EVENT, EVENTS } from './data/events';
 import { FACTION_HIRE_CAP, FACTIONS } from './data/factions';
@@ -126,7 +126,7 @@ describe('初期の 3 人', () => {
     expect(hero.name).toBe('コーモン');
     expect(mate.name).toBe('スケサン');
     expect(aide2.name).toBe('カクサン');
-    expect(aide2.rarity).toBe('rare');
+    expect(aide2.rarity).toBe('named');
     const skillKinds = aide2.skills.map((s) => s.effect.kind).sort();
     expect(skillKinds).toEqual(['dispel', 'ward'].sort());
   });
@@ -327,8 +327,6 @@ describe('初期状態', () => {
     expect(state.tavern).toHaveLength(3);
     for (const c of state.tavern) {
       expect(state.owned.some((o) => o.id === c.id)).toBe(false);
-      // レアが混ざっていれば、酒場限定 (source: 'tavern') のものだけになる
-      if (c.rarity === 'rare') expect(c.source).toBe('tavern');
     }
   });
 });
@@ -375,7 +373,7 @@ describe('酒場', () => {
     }
   });
 
-  it('酒場にレアが混ざりうること、ダンジョン限定レア (source: dungeon) は混ざらないこと', () => {
+  it('酒場にレアが混ざりうること (その場で generateRare により生成される)', () => {
     // 低確率 (15%) の当たりなので、seed を変えて何度も引き直して確かめる
     let sawRare = false;
     for (let seed = 0; seed < 200; seed++) {
@@ -383,7 +381,6 @@ describe('酒場', () => {
       for (const c of state.tavern) {
         if (c.rarity !== 'rare') continue;
         sawRare = true;
-        expect(c.source).toBe('tavern');
       }
     }
     expect(sawRare).toBe(true);
@@ -464,7 +461,7 @@ describe('酒場: 所持済みの名前の重複 (不具合の修正)', () => {
     }
   });
 
-  it('全陣営が上限に達し、未所持レアも無ければ、酒場が空になり引き直せなくなる', () => {
+  it('全陣営が上限に達すれば、酒場が空になり引き直せなくなる (レアも同じ陣営枠から生成するため)', () => {
     const state = fresh();
     state.gold = 1_000_000;
     const rng = new Rng(2);
@@ -474,9 +471,6 @@ describe('酒場: 所持済みの名前の重複 (不具合の修正)', () => {
         state.owned.push(generateCommon(faction, rng, serial++));
       }
     }
-    // 酒場限定レア (source: 'tavern') の r1・r3 も所持済みにしておく (未所持レアが残っていると
-    // それが酒場に並んでしまい、空にならないため)
-    state.owned.push(CHARACTERS.find((c) => c.id === 'r1')!, CHARACTERS.find((c) => c.id === 'r3')!);
 
     step(state, { type: 'reroll-tavern' });
 
@@ -1060,7 +1054,7 @@ describe('ボス前の分岐イベント', () => {
     expect(run.pending).toBeNull();
   });
 
-  it('「レアを迎える」で未所持の dungeon 限定レアが owned とデッキに加わる', () => {
+  it('「レアを迎える」で generateRare が 1 人その場で生成され、owned とデッキに加わる', () => {
     const state = fresh();
     step(state, { type: 'sortie', sectorId: 1 });
     const run = state.run!;
@@ -1072,14 +1066,19 @@ describe('ボス前の分岐イベント', () => {
     expect(state.owned.length).toBe(ownedBefore + 1);
     const newEntry = state.owned[state.owned.length - 1];
     expect(newEntry.rarity).toBe('rare');
-    expect(newEntry.source).toBe('dungeon');
     expect([...run.party.front, ...run.party.reserve].some((f) => f?.id === newEntry.id)).toBe(true);
     expect(run.pending).toBeNull();
   });
 
-  it('dungeon 限定レアを全員所持済みなら resolve-alt は何もしない (酒場限定レアの所持有無は問わない)', () => {
+  it('全陣営が雇用上限に達していても resolve-alt は必ずレアを出す (在庫という概念が無いため)', () => {
     const state = fresh();
-    state.owned = [...state.owned, ...CHARACTERS.filter((c) => c.rarity === 'rare' && c.source === 'dungeon')];
+    const rng = new Rng(3);
+    let serial = 900;
+    for (const faction of FACTIONS) {
+      for (let i = 0; i < FACTION_HIRE_CAP[faction]; i++) {
+        state.owned.push(generateCommon(faction, rng, serial++));
+      }
+    }
     step(state, { type: 'sortie', sectorId: 1 });
     const run = state.run!;
     run.pending = BOSS_ALT_EVENT;
@@ -1087,8 +1086,8 @@ describe('ボス前の分岐イベント', () => {
 
     step(state, { type: 'resolve-alt' });
 
-    expect(state.owned.length).toBe(ownedBefore);
-    expect(run.pending).not.toBeNull();
+    expect(state.owned.length).toBe(ownedBefore + 1);
+    expect(run.pending).toBeNull();
   });
 });
 
@@ -1118,7 +1117,7 @@ describe('ViewModel: 拠点の酒場と所持一覧', () => {
     expect(vm.screen.tavern).toHaveLength(3);
     expect(vm.screen.tavern[0].price).toBeGreaterThan(0);
     expect(vm.screen.roster.map((r) => r.id)).toEqual(['hero', 'mate', 'aide2']);
-    expect(vm.screen.roster[0].rarity).toBe('rare');
+    expect(vm.screen.roster[0].rarity).toBe('named');
   });
 });
 

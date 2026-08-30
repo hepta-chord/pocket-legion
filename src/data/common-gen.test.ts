@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { CHARACTERS } from './characters';
 import { FACTIONS } from './factions';
-import { generateCommon, NAME_POOLS, SKILL_POOLS } from './common-gen';
+import { generateCommon, generateRare, NAME_POOLS, SKILL_POOLS } from './common-gen';
 import { Rng } from '../rng';
 
 /** SKILL_POOLS の 2 枠目候補群に含まれる ActionSkillDef/PassiveDef の名前一覧 (陣営ごと) */
@@ -56,10 +55,28 @@ describe('generateCommon', () => {
     expect(attacks.size).toBeGreaterThan(1);
   });
 
-  it('レアの名前はコモンの名前候補 (NAME_POOLS) と重ならない (docs/plan.md「レアの名前」)', () => {
-    for (const c of CHARACTERS) {
-      if (c.rarity !== 'rare') continue;
-      expect(NAME_POOLS[c.faction]).not.toContain(c.name);
+});
+
+describe('generateRare (docs/plan.md「レアリティと入手」)', () => {
+  it('名前はコモンと同じ NAME_POOLS から引く。スキルは 0 コストの多段バリエーションとレア専用の 2 枠目候補から来る', () => {
+    const rng = new Rng(54321);
+    for (const faction of FACTIONS) {
+      for (let i = 0; i < 20; i++) {
+        const c = generateRare(faction, rng, i);
+        expect(c.faction).toBe(faction);
+        expect(c.rarity).toBe('rare');
+        expect(NAME_POOLS[faction]).toContain(c.name);
+        // 0 コスト通常攻撃の多段バリエーション (斬撃・双撃・三連撃) はレアの特権
+        expect(c.skills[0].baseCost).toBe(0);
+      }
     }
+  });
+
+  it('同じ seed なら同じ個体が出て、serial が違えば id だけが変わる', () => {
+    const a = generateRare('kingdom', new Rng(111), 1);
+    const b = generateRare('kingdom', new Rng(111), 2);
+    expect(a.id).not.toBe(b.id);
+    expect(a.name).toBe(b.name);
+    expect(a.baseAttack).toBe(b.baseAttack);
   });
 });
