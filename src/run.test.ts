@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { CHARACTERS } from './data/characters';
+import { emptyFormation } from './formation';
 import { Rng } from './rng';
 import { addToDeck, advance, damage, heal, isWiped, reviveDowned, startRun } from './run';
 
 const ROSTER = ['hero', 'mate'];
+// formation を空のまま渡すと、roster の先頭 6 人を自動で前衛に詰める (テストはこの既定値を使う)
+const AUTO = emptyFormation();
 
 describe('advance', () => {
   it('進むたびに深度が 1 つ増え、イベントを 1 つ抱える', () => {
-    const run = startRun(1, ROSTER);
+    const run = startRun(1, ROSTER, AUTO);
     const rng = new Rng(1);
     advance(run, rng);
     expect(run.depth).toBe(2);
@@ -15,7 +18,7 @@ describe('advance', () => {
   });
 
   it('ボスの深度に着くとイベントを引かずにボス戦になる', () => {
-    const run = startRun(1, ROSTER);
+    const run = startRun(1, ROSTER, AUTO);
     const rng = new Rng(1);
     for (let i = 0; i < 20 && !run.atBoss; i++) advance(run, rng);
     expect(run.atBoss).toBe(true);
@@ -24,7 +27,7 @@ describe('advance', () => {
   });
 
   it('ボスの 1 つ手前の深度は固定でボス前の分岐イベントになる', () => {
-    const run = startRun(1, ROSTER);
+    const run = startRun(1, ROSTER, AUTO);
     const rng = new Rng(1);
     for (let i = 0; i < 20 && run.depth < 9; i++) advance(run, rng);
     expect(run.depth).toBe(9);
@@ -34,13 +37,13 @@ describe('advance', () => {
 
 describe('HP', () => {
   it('回復は最大値で止まる', () => {
-    const run = startRun(1, ROSTER);
+    const run = startRun(1, ROSTER, AUTO);
     heal(run, 99999);
     expect(run.hp).toBe(run.maxHp);
   });
 
   it('被害は 0 で止まり、そこで全滅になる', () => {
-    const run = startRun(1, ROSTER);
+    const run = startRun(1, ROSTER, AUTO);
     damage(run, 99999);
     expect(run.hp).toBe(0);
     expect(isWiped(run)).toBe(true);
@@ -50,13 +53,13 @@ describe('HP', () => {
 describe('編成', () => {
   it('roster 全員でパーティを組む。前衛 6 まで、あふれれば控え', () => {
     const bigRoster = CHARACTERS.map((c) => c.id);
-    const run = startRun(1, bigRoster);
+    const run = startRun(1, bigRoster, AUTO);
     expect(run.party.front.filter(Boolean)).toHaveLength(6);
     expect(run.party.reserve.length).toBe(bigRoster.length - 6);
   });
 
   it('roster が 2 人だけなら 2 人で潜る', () => {
-    const run = startRun(1, ROSTER);
+    const run = startRun(1, ROSTER, AUTO);
     expect(run.party.front.filter(Boolean)).toHaveLength(2);
     expect(run.party.reserve).toHaveLength(0);
   });
@@ -64,7 +67,7 @@ describe('編成', () => {
 
 describe('addToDeck', () => {
   it('前衛に空きがあれば前衛に、無ければ控えに入り、maxHp が伸びる', () => {
-    const run = startRun(1, ROSTER);
+    const run = startRun(1, ROSTER, AUTO);
     const before = run.maxHp;
     const entry = CHARACTERS.find((c) => c.id === 'k1')!;
     addToDeck(run, entry);
@@ -75,7 +78,7 @@ describe('addToDeck', () => {
 
 describe('reviveDowned', () => {
   it('ダウンした Fighter を前衛の空きから戻し、downed を空にする', () => {
-    const run = startRun(1, ROSTER);
+    const run = startRun(1, ROSTER, AUTO);
     const downedFighter = run.party.front[0]!;
     run.party.front[0] = null;
     run.downed.push(downedFighter);

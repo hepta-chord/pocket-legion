@@ -19,12 +19,22 @@ import {
   whyCannotUse,
   type BattleState,
   type EnemyDef,
+  type Fighter,
   type SwapMove,
 } from './battle';
 import { CHARACTERS, skillLabels, type CharacterEntry } from './data/characters';
 import { FACTION_NAMES } from './data/factions';
 import { makeBoss, makeFoe } from './data/enemies';
 import { SECTORS, sectorById } from './data/sectors';
+import type { ActionSkillDef, PassiveDef, SkillCategory } from './data/skills';
+import {
+  emptyFormation,
+  isFormationUnset,
+  placeInFormation,
+  resolveFormation,
+  setFrontMember,
+  type Formation,
+} from './formation';
 import { hashSeed, Rng } from './rng';
 import {
   addToDeck,
@@ -37,11 +47,23 @@ import {
   startRun,
   type RunState,
 } from './run';
-import type { BattleView, DungeonView, LogLineView, TownView, ViewModel } from './view';
+import type {
+  BattleView,
+  DungeonFormationView,
+  DungeonView,
+  FormationCharacterView,
+  FormationEditorView,
+  FormationSlotView,
+  LogLineView,
+  PassiveDetailView,
+  SkillDetailView,
+  TownView,
+  ViewModel,
+} from './view';
 
-// 出撃の編成フロー (roster / tavern / potions / downed) を足して GameState の形が
-// 変わったので、古いセーブと噛み合わなくなる。区切りを上げて捨てる
-export const SAVE_VERSION = 4;
+// 編成 (formation) を足して GameState の形が変わったので、古いセーブと噛み合わなくなる。
+// 区切りを上げて捨てる
+export const SAVE_VERSION = 5;
 
 /** 回復薬の所持上限 */
 const POTION_MAX = 3;
@@ -58,6 +80,10 @@ export type Action =
   | { type: 'dismiss' }
   | { type: 'hire'; id: string }
   | { type: 'potion' }
+  /** 拠点の編成画面。所持キャラの一覧から前衛スロットへ配置する。id が null ならそのスロットを空にする */
+  | { type: 'formation-set'; slot: number; id: string | null }
+  /** ダンジョン内 (戦闘外) の編成。今のデッキの中から前衛スロットの中身を選び直す。新しいキャラは増やせない */
+  | { type: 'dungeon-formation-set'; slot: number; id: string | null }
   | { type: 'battle-skill'; slot: number; skill: number }
   | { type: 'battle-guard' }
   | { type: 'battle-swap'; moves: SwapMove[] }
@@ -75,6 +101,12 @@ export interface GameState {
   potions: number;
   /** 所持キャラの id 列。hero と mate は常に含む */
   roster: string[];
+  /**
+   * 前衛の編成。長さ 6 固定、値は roster の id か空きを示す null。
+   * デッキは絞らないので、控えは前衛に選ばれなかった roster 全員が自動で務める。
+   * 全スロット空 (初期状態) のときだけ roster の先頭 6 人を自動で詰める (resolveFormation)
+   */
+  formation: Formation;
   /** 今の酒場の品揃え (コモンの id、最大 3 人) */
   tavern: string[];
   /** 解放済みの区画。ボスを倒すと 1 つ増える */
@@ -115,6 +147,7 @@ export function newGame(seed: string): GameState {
     gold: START_GOLD,
     potions: 0,
     roster: ['hero', 'mate'],
+    formation: emptyFormation(),
     tavern: [],
     unlocked: 1,
     run: null,
@@ -295,7 +328,7 @@ export function step(state: GameState, action: Action): void {
     case 'sortie': {
       if (state.run) break;
       if (action.sectorId > state.unlocked) break;
-      state.run = startRun(action.sectorId, state.roster);
+      state.run = startRun(action.sectorId, state.roster, state.formation);
       state.result = null;
       addLog(state, 'info', `${sectorById(action.sectorId).name}へ潜った。`);
       break;
@@ -397,6 +430,22 @@ export function step(state: GameState, action: Action): void {
       break;
     }
 
+    case 'formation-set': {
+      // 拠点の編成画面だけの操作にする。出撃中は state.formation を触らず、
+      // 代わりに dungeon-formation-set でその場のデッキを並べ替える
+      if (state.run || state.battle) break;
+      if (action.id !== null && !state.roster.includes(action.id)) break;
+      placeInFormation(state.formation, action.slot, action.id);
+      break;
+    }
+
+    case 'dungeon-formation-set': {
+      const run = state.run;
+      if (!run || state.battle) break;
+      setFrontMember(run.party, action.slot, action.id);
+      break;
+    }
+
     case 'potion': {
       if (state.potions <= 0) break;
       const run = state.run;
@@ -469,6 +518,50 @@ function skillNote(oncePerSortie: boolean | undefined, selfDown: boolean | undef
   return tags.length > 0 ? tags.join('・') : null;
 }
 
+function skillCategoryLabel(category: SkillCategory): string {
+  return category === 'physical' ? '物理' : category === 'magic' ? '魔法' : '必殺';
+}
+
+/** スキルの効果を短文にする。編成画面の詳細タップで見せる (main.ts では組み立てない) */
+function skillEffectText(def: ActionSkillDef): string {
+  const e = def.effect;
+  switch (e.kind) {
+    case 'attack':
+      return e.target === 'all' ? `敵全体に威力 ${e.power.toFixed(1)} の攻撃` : `敵に威力 ${e.power.toFixed(1)} の攻撃`;
+    case 'heal':
+      return `HP を最大値の ${Math.round(e.power * 100)}% 回復`;
+    case 'buff':
+      return `攻撃に +${Math.round(e.power * 100)}% の支援`;
+    case 'barrier':
+      return '次に来る敵の攻撃を 1 回無効化';
+  }
+}
+
+function skillDetailOf(def: ActionSkillDef): SkillDetailView {
+  return {
+    name: def.name,
+    cost: def.baseCost,
+    category: skillCategoryLabel(def.category),
+    effect: skillEffectText(def),
+    note: skillNote(def.oncePerSortie, def.selfDown),
+  };
+}
+
+/** パッシブの効果を短文にする。現行のパッシブはどれも単一の hook しか持たないが、複数あれば併記する */
+function passiveEffectText(p: PassiveDef): string {
+  const parts: string[] = [];
+  const h = p.hooks;
+  if (h.manaPerTurn) parts.push(`マナ払い出し ${h.manaPerTurn > 0 ? '+' : ''}${h.manaPerTurn}`);
+  if (h.guardRate) parts.push(`ガード軽減率 ${h.guardRate > 0 ? '+' : ''}${Math.round(h.guardRate * 100)}%`);
+  if (h.telegraph) parts.push(`大技の予告 ${h.telegraph > 0 ? '+' : ''}${h.telegraph} ターン`);
+  if (h.cover) parts.push('ボスの大技を前衛にいる間、身代わりする');
+  return parts.length > 0 ? parts.join('・') : '効果なし';
+}
+
+function passiveDetailOf(p: PassiveDef): PassiveDetailView {
+  return { name: p.name, effect: passiveEffectText(p) };
+}
+
 function toBattleView(b: BattleState, potions: number): BattleView {
   const e = b.enemy;
   return {
@@ -482,6 +575,7 @@ function toBattleView(b: BattleState, potions: number): BattleView {
     barrier: b.barrier,
     turn: b.turn,
     combo: b.combo,
+    buff: b.buff,
     potions,
     enemy: {
       name: e.def.name,
@@ -491,6 +585,7 @@ function toBattleView(b: BattleState, potions: number): BattleView {
       resist: resistLabel(e.def.resist),
       countdown: e.countdown,
       alive: e.hp > 0,
+      isBoss: e.def.isBoss,
     },
     slots: b.party.front.map((f, slot) => {
       if (!f) return null;
@@ -507,10 +602,69 @@ function toBattleView(b: BattleState, potions: number): BattleView {
         })),
       };
     }),
-    reserve: b.party.reserve.map((f) => ({ id: f.id, name: f.name, faction: FACTION_NAMES[f.faction] })),
+    reserve: b.party.reserve.map(fighterCard),
     swapCooldown: b.party.swapCooldown,
     canGuard: b.guard < GUARD_MAX && b.mana >= GUARD_COST,
   };
+}
+
+/**
+ * roster の id からキャラ定義を引いてカードにする。酒場・所持一覧・編成の候補一覧すべてで使う。
+ * 一覧行の要約 (名前・陣営・レアリティ・攻撃力・体力) と、タップして開く詳細
+ * (スキル・パッシブの効果) を両方含める
+ */
+function characterCard(entry: CharacterEntry): FormationCharacterView {
+  return {
+    id: entry.id,
+    name: entry.name,
+    faction: FACTION_NAMES[entry.faction],
+    skills: skillLabels(entry),
+    rarity: entry.rarity,
+    attack: entry.attack,
+    vitality: entry.vitality,
+    skillDetails: entry.skills.map(skillDetailOf),
+    passiveDetails: entry.passives.map(passiveDetailOf),
+  };
+}
+
+/**
+ * 出撃済みの Fighter を characterCard と同じ形のカードにする (ダンジョン内の編成・交代ピッカー用)。
+ * レアリティはキャラ定義から引く (Fighter 自体は持たない)
+ */
+function fighterCard(f: Fighter): FormationCharacterView {
+  const entry = CHARACTERS.find((c) => c.id === f.id);
+  return {
+    id: f.id,
+    name: f.name,
+    faction: FACTION_NAMES[f.faction],
+    skills: [...f.skills.map((s) => s.def.name), ...f.passives.map((p) => p.name)],
+    rarity: entry?.rarity ?? 'common',
+    attack: f.attack,
+    vitality: f.vitality,
+    skillDetails: f.skills.map((s) => skillDetailOf(s.def)),
+    passiveDetails: f.passives.map(passiveDetailOf),
+  };
+}
+
+/** id の列 (前衛 6 枠) を編成カードの並びにする */
+function toFormationSlots(formation: readonly (string | null)[]): FormationSlotView[] {
+  return formation.map((id) => {
+    if (!id) return { character: null };
+    const entry = CHARACTERS.find((c) => c.id === id);
+    return { character: entry ? characterCard(entry) : null };
+  });
+}
+
+/** ダンジョン内 (戦闘外) の編成データ。今の Party (front/reserve) の中身だけを見せる */
+function toDungeonFormationView(run: RunState): DungeonFormationView {
+  const front = run.party.front;
+  const slots: FormationSlotView[] = front.map((f) => ({ character: f ? fighterCard(f) : null }));
+  const members = [...front.filter((f): f is Fighter => f !== null), ...run.party.reserve];
+  const roster = members.map((f) => {
+    const idx = front.indexOf(f);
+    return { ...fighterCard(f), placedSlot: idx >= 0 ? idx : null };
+  });
+  return { slots, roster };
 }
 
 function toDungeonView(run: RunState, potions: number, roster: readonly string[]): DungeonView {
@@ -537,20 +691,29 @@ function toDungeonView(run: RunState, potions: number, roster: readonly string[]
     // 通路の見た目だけを 4 段で回す。ゲーム状態ではない
     corridor: run.depth % 4,
     event: pending,
+    front: run.party.front.map((f) => ({ character: f ? fighterCard(f) : null })),
     frontCount: run.party.front.filter((f) => f !== null).length,
     reserveCount: run.party.reserve.length,
     downedCount: run.downed.length,
     potions,
+    formation: toDungeonFormationView(run),
   };
 }
 
 function toTownView(state: GameState): TownView {
-  const card = (entry: CharacterEntry) => ({
-    id: entry.id,
-    name: entry.name,
-    faction: FACTION_NAMES[entry.faction],
-    skills: skillLabels(entry),
-  });
+  const entryOf = (id: string) => CHARACTERS.find((c) => c.id === id);
+  const rosterEntries = state.roster.map(entryOf).filter((c): c is CharacterEntry => c !== undefined);
+
+  const resolved = resolveFormation(state.roster, state.formation);
+  const formation: FormationEditorView = {
+    slots: toFormationSlots(resolved),
+    auto: isFormationUnset(state.formation),
+    roster: rosterEntries.map((entry) => {
+      const idx = resolved.indexOf(entry.id);
+      return { ...characterCard(entry), placedSlot: idx >= 0 ? idx : null };
+    }),
+  };
+
   return {
     kind: 'town',
     gold: state.gold,
@@ -562,13 +725,11 @@ function toTownView(state: GameState): TownView {
       unlocked: s.id <= state.unlocked,
     })),
     tavern: state.tavern
-      .map((id) => CHARACTERS.find((c) => c.id === id))
+      .map(entryOf)
       .filter((c): c is CharacterEntry => c !== undefined)
-      .map((entry) => ({ ...card(entry), price: entry.price, affordable: state.gold >= entry.price })),
-    roster: state.roster
-      .map((id) => CHARACTERS.find((c) => c.id === id))
-      .filter((c): c is CharacterEntry => c !== undefined)
-      .map((entry) => ({ ...card(entry), rarity: entry.rarity })),
+      .map((entry) => ({ ...characterCard(entry), price: entry.price, affordable: state.gold >= entry.price })),
+    roster: rosterEntries.map(characterCard),
+    formation,
   };
 }
 
