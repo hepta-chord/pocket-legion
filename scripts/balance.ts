@@ -6,10 +6,12 @@ import { formatReports } from '../src/sim/report';
 // 想定レベル (浅層 1・中層 10・深層 20) と想定所持人数 (浅層 5・中層 12・深層 20) を
 // 区画ごとに振ってから測る (docs/batch-growth.md 7 節、docs/batch-faction.md 4 節)。
 // 実際のプレイでどこまで育ち、何人集まっているかは計画側の判断で、ここは「測れる形」を用意するだけ
+// 開始深度は sectorById(id).from + 1 として measure 内部で決まる (区画の定義から引くので、
+// 実装 (run.ts の startRun) と食い違わない。不具合の修正)
 const rows = [
-  measure('浅層 (2-10)', 1, 2, 300, 11, 1, 5),
-  measure('中層 (12-20)', 2, 12, 300, 22, 10, 12),
-  measure('深層 (22-30)', 3, 22, 300, 33, 20, 20),
+  measure('浅層 (2-10)', 1, 300, 11, 1, 5),
+  measure('中層 (12-20)', 2, 300, 22, 10, 12),
+  measure('深層 (22-30)', 3, 300, 33, 20, 20),
 ];
 
 console.log(formatReports(rows));

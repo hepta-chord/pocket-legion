@@ -43,9 +43,12 @@ export function startRun(
   // 前衛に選ばれなかった owned 全員が控えになる (docs/plan.md「編成画面」)
   const party = partyFromRosterAndFormation(owned, formation, formationTouched);
   const maxHp = partyMaxHp(party);
+  // 区画ごとの開始深度 (from) から潜り始める。中層・深層が浅層の続きの深さから
+  // 始まってしまうと、区画を分けた意味が無くなるため (不具合の修正)
+  const depth = sectorById(sectorId).from;
   return {
     sectorId,
-    depth: 1,
+    depth,
     hp: maxHp,
     maxHp,
     gold: 0,

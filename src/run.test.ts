@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CHARACTERS, type CharacterEntry } from './data/characters';
 import { generateCommon } from './data/common-gen';
+import { SECTORS } from './data/sectors';
 import { emptyFormation } from './formation';
 import { Rng } from './rng';
 import { addToDeck, advance, damage, heal, isWiped, reviveDowned, startRun } from './run';
@@ -36,6 +37,19 @@ describe('advance', () => {
     for (let i = 0; i < 20 && run.depth < 9; i++) advance(run, rng);
     expect(run.depth).toBe(9);
     expect(run.pending?.kind).toBe('boss-alt');
+  });
+});
+
+describe('区画ごとの開始深度 (不具合の修正)', () => {
+  it('各区画が Sector.from の深度から始まる (中層・深層が浅層と同じ深さを歩き直さない)', () => {
+    for (const sector of SECTORS) {
+      const run = startRun(sector.id, OWNED, AUTO);
+      expect(run.depth).toBe(sector.from);
+    }
+    // 具体値でも確認しておく (浅層 1・中層 11・深層 21)
+    expect(startRun(1, OWNED, AUTO).depth).toBe(1);
+    expect(startRun(2, OWNED, AUTO).depth).toBe(11);
+    expect(startRun(3, OWNED, AUTO).depth).toBe(21);
   });
 });
 
