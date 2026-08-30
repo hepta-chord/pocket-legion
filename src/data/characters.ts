@@ -9,11 +9,16 @@
 // コモンはここに名簿を持たない (data/common-gen.ts でその場ごとに生成する)。
 // ここに残るのは固定で定義するキャラ: 初期の 2 人 (主人公・相棒) と、
 // レア 4 人 (0 コスト通常攻撃を持つ熟練者。スキル構成もパラメータも固定)。
-// レベル・陣営倍率を備えた成長系は v1 後回し (マイルストーン 5 の残り)。
+//
+// レベル・成長カーブ (growth.ts) は個体ごとに持つ。CHARACTERS の要素はあくまで
+// 「定義」の共有オブジェクトなので、所持に積むときは instantiate() で必ずコピーを作り、
+// レベルアップが他のセーブ・他のプレイへ漏れないようにする。
+// 陣営倍率 (同陣営の所持で全員が底上げされる仕組み) はまだ後回し (マイルストーン 5 の残り)。
 
 import { makeSkillState, type Fighter } from '../battle';
 import type { Faction } from '../data/factions';
 import type { ActionSkillDef, PassiveDef } from '../data/skills';
+import { effectiveStat, type Curve } from '../growth';
 
 /** レアの 0 コスト通常攻撃。タダでコンボを起点にできるのがレアの価値になる */
 const zeroAttack = (id: string, name = '斬撃', shortName = '斬撃'): ActionSkillDef => ({
@@ -100,10 +105,10 @@ export interface CharacterEntry {
   name: string;
   faction: Faction;
   rarity: 'common' | 'rare';
-  /** 酒場の雇用額。レアは酒場に並ばないことがあるが、表示や将来の入手経路のため 0 でない値を持たせる */
-  price: number;
-  attack: number;
-  vitality: number;
+  /** レベル 1 のときの攻撃力。実効値 (レベルなり) は effectiveAttack で計算する */
+  baseAttack: number;
+  /** レベル 1 のときの体力。実効値は effectiveVitality で計算する */
+  baseVitality: number;
   skills: ActionSkillDef[];
   passives: PassiveDef[];
   /**
@@ -111,6 +116,46 @@ export interface CharacterEntry {
    * (docs/plan.md「レアリティと入手」)。コモン (生成キャラ) と主人公・相棒は持たない
    */
   source?: 'tavern' | 'dungeon';
+  /** 現在レベル。初期値 1 */
+  level: number;
+  /** 現在の経験値 */
+  exp: number;
+  /**
+   * レベル上限。個体ごとに振る (docs/batch-growth.md 補足)。コモンは 16〜24、レアはそれより高く、
+   * 主人公だけは上限が無い代わりに大きな値 (999) を入れる
+   */
+  maxLevel: number;
+  /**
+   * 成長の補正値 (マスクパラメータ)。上限到達時の伸び幅 (base * (1 + growth)) を決める。
+   * growth と maxLevel は個体ごとに違う値を持たせ、育ち切った到達値が全員同じにならないようにする
+   */
+  growth: number;
+  /** 成長カーブの型 (マスクパラメータ)。ViewModel には出さない */
+  curve: Curve;
+}
+
+/** 現在レベルでの実効攻撃力 */
+export function effectiveAttack(entry: CharacterEntry): number {
+  return effectiveStat(entry.baseAttack, entry);
+}
+
+/** 現在レベルでの実効体力 (パーティ最大 HP への寄与) */
+export function effectiveVitality(entry: CharacterEntry): number {
+  return effectiveStat(entry.baseVitality, entry);
+}
+
+/**
+ * CHARACTERS (固定の主人公・相棒・レア) は module 単位の共有オブジェクトなので、
+ * そのまま owned に積んでレベルを書き込むと、他のセーブ・他のプレイにまで伸びてしまう。
+ * 所持に移すときは必ずこれを通し、独立したコピー (レベル 1・経験値 0 の新品) にする
+ */
+export function instantiate(entry: CharacterEntry): CharacterEntry {
+  return { ...entry, level: 1, exp: 0 };
+}
+
+/** 酒場・テスト・sim/ 計測で「このレベルから始まる個体」を作る。上限は超えない */
+export function withLevel(entry: CharacterEntry, level: number): CharacterEntry {
+  return { ...entry, level: Math.max(1, Math.min(level, entry.maxLevel)), exp: 0 };
 }
 
 /** 酒場・所持一覧に出す短いスキル注記。アクション名とパッシブ名を並べる */
@@ -128,22 +173,33 @@ export const CHARACTERS: readonly CharacterEntry[] = [
     // レベル上限が無い代わりに倍率で伸びにくい、という釣り合いになる
     faction: 'frontier',
     rarity: 'rare',
-    price: 400,
-    attack: 120,
-    vitality: 60,
+    baseAttack: 120,
+    baseVitality: 60,
     skills: [zeroAttack('hero-slash'), heroFinish],
     passives: [],
+    level: 1,
+    exp: 0,
+    // 上限なしの代わりに大きな値 (999) を入れる。晩成型にして、
+    // 「長く遊ぶほど主人公が部隊の芯になる」を数値でも表す
+    maxLevel: 999,
+    growth: 1.5,
+    curve: 'late',
   },
   {
     id: 'mate',
     name: '相棒',
     faction: 'order',
     rarity: 'common',
-    price: 120,
-    attack: 90,
-    vitality: 60,
+    baseAttack: 90,
+    baseVitality: 60,
     skills: [mateBolt, mateHeal],
     passives: [],
+    level: 1,
+    exp: 0,
+    maxLevel: 22,
+    growth: 0.6,
+    // 早熟型。安いヒーリングで序盤から支える相棒の役回りに合わせる
+    curve: 'early',
   },
 
   // レア 4 人。0 コスト攻撃を軸に、基礎値か有能なスキルで差をつける。陣営は散らす。
@@ -154,50 +210,66 @@ export const CHARACTERS: readonly CharacterEntry[] = [
     name: '熟練剣士',
     faction: 'kingdom',
     rarity: 'rare',
-    price: 400,
-    attack: 140,
-    vitality: 60,
+    baseAttack: 140,
+    baseVitality: 60,
     skills: [zeroAttack('r1-slash'), greatBlade],
     passives: [],
     source: 'tavern',
+    level: 1,
+    exp: 0,
+    maxLevel: 32,
+    growth: 1.0,
+    curve: 'linear',
   },
   {
     id: 'r2',
     name: '教団の賢者',
     faction: 'order',
     rarity: 'rare',
-    price: 400,
-    attack: 130,
-    vitality: 50,
+    baseAttack: 130,
+    baseVitality: 50,
     // 教団 (回復・支援) の顔として、レアの支援役 = 鼓舞 2 枚積みを持たせる
     skills: [zeroAttack('r2-slash', '一閃', '一閃'), cheer2],
     passives: [],
     source: 'dungeon',
+    level: 1,
+    exp: 0,
+    maxLevel: 34,
+    growth: 0.9,
+    curve: 'early',
   },
   {
     id: 'r3',
     name: '傭兵の豪傑',
     faction: 'mercs',
     rarity: 'rare',
-    price: 400,
-    attack: 135,
-    vitality: 70,
+    baseAttack: 135,
+    baseVitality: 70,
     // 傭兵団 (ガード・体力・身代わり) の顔として、レアの壁役 = ward 2 枚積みを持たせる
     skills: [zeroAttack('r3-slash', '双撃', '双撃'), ward2],
     passives: [],
     source: 'tavern',
+    level: 1,
+    exp: 0,
+    maxLevel: 30,
+    growth: 1.1,
+    curve: 'linear',
   },
   {
     id: 'r4',
     name: '辺境の捨て身剣士',
     faction: 'frontier',
     rarity: 'rare',
-    price: 400,
-    attack: 150,
-    vitality: 40,
+    baseAttack: 150,
+    baseVitality: 40,
     skills: [zeroAttack('r4-slash'), lastStand],
     passives: [],
     source: 'dungeon',
+    level: 1,
+    exp: 0,
+    maxLevel: 36,
+    growth: 1.2,
+    curve: 'late',
   },
 ];
 
@@ -206,8 +278,8 @@ export function buildFighter(entry: CharacterEntry): Fighter {
     id: entry.id,
     name: entry.name,
     faction: entry.faction,
-    attack: entry.attack,
-    vitality: entry.vitality,
+    attack: effectiveAttack(entry),
+    vitality: effectiveVitality(entry),
     skills: entry.skills.map(makeSkillState),
     passives: entry.passives,
     downed: false,
