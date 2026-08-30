@@ -42,11 +42,12 @@ if (loaded.discarded) addLog(state, 'info', '前のセーブは形式が古い�
 // 理由: セーブしたい「進行」ではなく「今どの画面を見ているか」でしかなく、
 // リロードすれば拠点トップやダンジョンの通常画面に戻ってもプレイヤーは困らないため。
 // (docs/plan.md 4 節の「main.ts のローカル状態にしてもよい」を選んだ)
-// 拠点は 2 階層のドリルダウンにする。ホームは「酒場」「道具屋」「探索」の 3 択だけを出し、
+// 拠点は 2 階層のドリルダウンにする。ホームは「酒場」「道具屋」「転生所」「探索」の 4 択を出し、
 // 探索を選ぶと区画の一覧 (explore) に進む。将来、迷宮以外の行き先や
 // 複数の迷宮が増えても、この階層を作り直さずに済む。
-// 道具屋 (shop) は酒場と役目が違う (人を雇う場所と物を買う場所) ので、ページを分けてある
-type TownPage = 'home' | 'explore' | 'tavern' | 'shop' | 'formation';
+// 道具屋 (shop) は酒場と役目が違う (人を雇う場所と物を買う場所) ので、ページを分けてある。
+// 転生所 (rebirth) は同じ形の一覧 (対象キャラの一覧 + 詳細モーダルで実行) を持つ
+type TownPage = 'home' | 'explore' | 'tavern' | 'shop' | 'rebirth' | 'formation';
 let page: TownPage = 'home';
 let dungeonFormationOpen = false;
 
@@ -85,6 +86,21 @@ interface DetailModalConfig {
 }
 let activeDetail: DetailModalConfig | null = null;
 
+/**
+ * 汎用の確認ダイアログ。#detail-modal の骨格 (modal-card/modal-head/modal-actions) を使い回す。
+ * ゲームリセットのように「はい / いいえ」だけを聞く場面向けで、キャラの詳細は持たない。
+ * activeDetail と同時には開かない (renderDetailModal 側で activeConfirm を優先する)
+ */
+interface ConfirmDialogConfig {
+  title: string;
+  body: string;
+  confirmLabel: string;
+  /** true なら「はい」ボタンの文字を赤にする (取り返しのつかない操作向け) */
+  danger?: boolean;
+  onConfirm: () => void;
+}
+let activeConfirm: ConfirmDialogConfig | null = null;
+
 function closePicker(): void {
   picker = null;
   pickerFactionFilter = 'all';
@@ -116,8 +132,8 @@ function navButton(label: string, onClick: () => void, disabled = false): HTMLBu
   return b;
 }
 
-function rarityLabel(rarity: 'common' | 'rare'): string {
-  return rarity === 'rare' ? 'レア' : 'コモン';
+function rarityLabel(rarity: 'common' | 'rare' | 'named'): string {
+  return rarity === 'named' ? 'ネームド' : rarity === 'rare' ? 'レア' : 'コモン';
 }
 
 /** 「Lv 1/20」の形。キャラ枠・編成の一覧・酒場のカードのどれにもこの形で出す (growth/curve は出さない) */
@@ -271,6 +287,23 @@ function renderHomeStage(s: TownView): void {
   });
   list.append(shopCard);
 
+  // 転生所。ネームド (雇用上限に数えない固定の 3 人) は対象から外れる (docs/plan.md「転生所」)
+  const rebirthCard = document.createElement('button');
+  rebirthCard.type = 'button';
+  rebirthCard.className = 'card card-tappable';
+  const rebirthName = document.createElement('p');
+  rebirthName.className = 'card-name';
+  rebirthName.textContent = '転生所';
+  const rebirthSub = document.createElement('p');
+  rebirthSub.className = 'card-sub';
+  rebirthSub.textContent = `対象 ${s.rebirth.length} 人`;
+  rebirthCard.append(rebirthName, rebirthSub);
+  rebirthCard.addEventListener('click', () => {
+    page = 'rebirth';
+    render();
+  });
+  list.append(rebirthCard);
+
   const exploreCard = document.createElement('button');
   exploreCard.type = 'button';
   exploreCard.className = 'card card-tappable';
@@ -289,6 +322,30 @@ function renderHomeStage(s: TownView): void {
   list.append(exploreCard);
 
   stageBody.append(list);
+
+  // ホーム一覧の最下部の「ゲームをはじめから」。行き先と同じ見た目で並ぶと誤タップ一発で
+  // 全部消えるので、色 (赤) で別物だと分からせる (docs/plan.md「拠点画面」)
+  const reset = document.createElement('button');
+  reset.type = 'button';
+  reset.className = 'danger-link';
+  reset.textContent = 'ゲームをはじめから';
+  reset.addEventListener('click', () => {
+    activeConfirm = {
+      title: 'ゲームをはじめから',
+      body: 'セーブを消して最初からやり直します。よろしいですか?',
+      confirmLabel: 'はい',
+      danger: true,
+      onConfirm: () => {
+        clearSave();
+        state = newGame(randomSeedString());
+        addLog(state, 'info', '迷宮都市に着いた。');
+        page = 'home';
+        render();
+      },
+    };
+    render();
+  });
+  stageBody.append(reset);
 }
 
 /** 探索の行き先一覧 (ホームから「探索」を選んだ先)。今は迷宮 1 本ぶんの区画一覧だが、
@@ -393,6 +450,55 @@ function renderShopStage(s: TownView): void {
   stageBody.append(list);
 }
 
+/**
+ * 転生所。所持キャラ一覧 (ネームド除く) をタップすると詳細と費用を見せ、確認の上で転生する
+ * (docs/plan.md「転生所」)。名前・陣営・id は保ったまま、レベル 1 に戻して中身を引き直す
+ */
+function renderRebirthStage(s: TownView): void {
+  const head = document.createElement('p');
+  head.className = 'lead';
+  head.textContent = '転生所';
+  stageBody.append(head);
+  const note = document.createElement('p');
+  note.className = 'body';
+  note.textContent = '選んだキャラをレベル 1 に戻し、基礎値・成長・スキルを引き直す。名前と陣営は保たれる。';
+  stageBody.append(note);
+
+  if (s.rebirth.length === 0) {
+    const none = document.createElement('p');
+    none.className = 'body';
+    none.textContent = '転生できるキャラがいない。';
+    stageBody.append(none);
+    return;
+  }
+
+  const list = document.createElement('div');
+  list.className = 'list';
+  for (const c of s.rebirth) {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'card card-tappable';
+    const name = document.createElement('p');
+    name.className = 'card-name';
+    name.textContent = `${c.name} (${c.faction} / ${rarityLabel(c.rarity)})`;
+    const sub = document.createElement('p');
+    sub.className = 'card-sub';
+    sub.textContent = `${lvLabel(c)} ・ 攻撃 ${c.attack} ・ 体力 ${c.vitality} ・ 費用 ${c.price} G`;
+    card.append(name, sub);
+    card.addEventListener('click', () => {
+      activeDetail = {
+        row: c,
+        actionLabel: `転生させる (${c.price} G)`,
+        actionDisabled: !c.affordable,
+        onAction: () => act({ type: 'rebirth', charId: c.id }),
+      };
+      render();
+    });
+    list.append(card);
+  }
+  stageBody.append(list);
+}
+
 function renderFormationStage(s: TownView): void {
   const head = document.createElement('p');
   head.className = 'lead';
@@ -446,6 +552,7 @@ function renderStageBody(vm: ViewModel): void {
     else if (page === 'explore') renderExploreStage(s);
     else if (page === 'tavern') renderTavernStage(s);
     else if (page === 'shop') renderShopStage(s);
+    else if (page === 'rebirth') renderRebirthStage(s);
     else renderFormationStage(s);
     return;
   }
@@ -816,13 +923,64 @@ function renderPicker(): void {
   pickerEl.append(list);
 }
 
+/** ゲームリセットのような「はい / いいえ」だけの確認ダイアログ。activeDetail と骨格を共有する */
+function renderConfirmModal(cfg: ConfirmDialogConfig): void {
+  detailModalEl.hidden = false;
+  const card = document.createElement('div');
+  card.className = 'modal-card';
+
+  const head = document.createElement('div');
+  head.className = 'modal-head';
+  const title = document.createElement('p');
+  title.className = 'modal-title';
+  title.textContent = cfg.title;
+  head.append(title);
+  card.append(head);
+
+  const scroll = document.createElement('div');
+  scroll.className = 'modal-scroll';
+  const body = document.createElement('p');
+  body.className = 'card-sub';
+  body.textContent = cfg.body;
+  scroll.append(body);
+  card.append(scroll);
+
+  const actions = document.createElement('div');
+  actions.className = 'modal-actions';
+  const confirm = document.createElement('button');
+  confirm.type = 'button';
+  confirm.textContent = cfg.confirmLabel;
+  if (cfg.danger) confirm.className = 'btn-danger';
+  confirm.addEventListener('click', () => {
+    const onConfirm = cfg.onConfirm;
+    activeConfirm = null;
+    onConfirm();
+  });
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.textContent = 'いいえ';
+  cancel.addEventListener('click', () => {
+    activeConfirm = null;
+    render();
+  });
+  actions.append(confirm, cancel);
+  card.append(actions);
+
+  detailModalEl.append(card);
+}
+
 /**
  * 詳細ポップアップ (モーダル)。名前・陣営・レアリティ・攻撃力・体力・スキル 2 つの詳細・
  * パッシブを出す。編成・交代のピッカーと酒場が共有する 1 つのコンポーネントで、
- * 実行ボタンのラベルと挙動 (配置 / 雇用) だけが activeDetail 側で違う
+ * 実行ボタンのラベルと挙動 (配置 / 雇用) だけが activeDetail 側で違う。
+ * ゲームリセットの確認ダイアログ (activeConfirm) が立っていればそちらを優先する
  */
 function renderDetailModal(): void {
   detailModalEl.innerHTML = '';
+  if (activeConfirm) {
+    renderConfirmModal(activeConfirm);
+    return;
+  }
   if (!activeDetail) {
     detailModalEl.hidden = true;
     return;

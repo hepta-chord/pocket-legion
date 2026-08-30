@@ -40,7 +40,8 @@ export interface CharacterCardView {
  * 両方を賄う。詳細の効果文はここで文字列として届く (main.ts では組み立てない)
  */
 export type FormationCharacterView = CharacterCardView & {
-  rarity: 'common' | 'rare';
+  /** 'named' は固定の 3 人だけが持つ別格のレアリティ。表示名は「ネームド」(main.ts の rarityLabel) */
+  rarity: 'common' | 'rare' | 'named';
   /** 現在レベルでの実効値。growth/curve (マスクパラメータ) はここに出さない */
   attack: number;
   vitality: number;
@@ -108,6 +109,11 @@ export interface TownView {
   /** 所持キャラの一覧 */
   roster: FormationCharacterView[];
   formation: FormationEditorView;
+  /**
+   * 転生所の対象一覧 (ネームドを除く所持キャラ)。price は雇用価格の半額、
+   * affordable は所持金で払えるか (docs/plan.md「転生所」)
+   */
+  rebirth: (FormationCharacterView & { price: number; affordable: boolean })[];
 }
 
 /**
