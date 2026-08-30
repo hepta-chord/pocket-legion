@@ -51,7 +51,8 @@ describe('拠点', () => {
     const vm = toViewModel(fresh());
     expect(vm.screen.kind).toBe('town');
     if (vm.screen.kind !== 'town') return;
-    expect(vm.screen.sectors.map((s) => s.unlocked)).toEqual([true, false, false]);
+    // 奈落 (区画 4) が増えたので、区画一覧も 4 件になる (仕様変更に合わせる最小修正)
+    expect(vm.screen.sectors.map((s) => s.unlocked)).toEqual([true, false, false, false]);
   });
 
   it('未解放の区画へは出撃できない', () => {
@@ -612,7 +613,8 @@ describe('拠点の一覧', () => {
     const vm = toViewModel(state);
     expect(vm.screen.kind).toBe('town');
     if (vm.screen.kind !== 'town') return;
-    expect(vm.screen.sectors).toHaveLength(3);
+    // 奈落 (区画 4) が増えたので 4 件になる (仕様変更に合わせる最小修正)
+    expect(vm.screen.sectors).toHaveLength(4);
     expect(vm.screen.sectors[0].unlocked).toBe(true);
     expect(Array.isArray(vm.screen.tavern)).toBe(true);
   });

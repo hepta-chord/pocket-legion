@@ -40,7 +40,7 @@ import {
 import { generateCommon, generateRare, NAME_POOLS, rerollContent } from './data/common-gen';
 import { CORPSE_TRAP_CHANCE, NOTHING_TRAP_CHANCE, TREASURE_POTION_CHANCE, TREASURE_TRAP_CHANCE } from './data/events';
 import { FACTION_HIRE_CAP, FACTION_NAMES, FACTION_WEIGHT, FACTIONS, type Faction } from './data/factions';
-import { makeBoss, makeFoe } from './data/enemies';
+import { abyssMul, makeBoss, makeFoe } from './data/enemies';
 import { DUNGEONS } from './data/dungeons';
 import { priceOf } from './data/pricing';
 import { sectorById } from './data/sectors';
@@ -59,6 +59,7 @@ import { factionMultiplier, factionMultiplierOf, factionTotals, type FactionTota
 import {
   addToDeck,
   advance,
+  continueAbyss,
   damage,
   heal,
   isWiped,
@@ -86,7 +87,9 @@ import type {
 // 11 -> 12: レアの生成化 (r1〜r4・source 廃止) とネームド (rarity: 'named') の追加で
 // 旧セーブの個体定義が食い違うため。生成キャラはスキル定義ごとセーブに保存されるので、
 // 候補群から消しても個体には残ってしまう「泉脈の残存」と同じ理由 (docs/plan.md「決定済みの設計判断」)
-export const SAVE_VERSION = 12;
+// 12 -> 13: 奈落 (docs/plan.md「奈落」) の追加で GameState に deepest (最深到達深度) が増え、
+// 形が変わるため
+export const SAVE_VERSION = 13;
 
 /** 回復薬の所持上限 */
 const POTION_MAX = 3;
@@ -130,6 +133,10 @@ export type Action =
   | { type: 'resolve' }
   /** ボス前の分岐イベントだけが持つ、もう一方の選択肢 (レアの加入) */
   | { type: 'resolve-alt' }
+  /** 奈落のボスを倒したあと「潜り続ける」。回復も補給も無しで次の 10 階に入る */
+  | { type: 'abyss-continue' }
+  /** 奈落のボスを倒したあと「帰還する」。戦利品を持って拠点に戻る */
+  | { type: 'abyss-return' }
   | { type: 'retreat' }
   | { type: 'dismiss' }
   | { type: 'hire'; id: string }
@@ -218,6 +225,11 @@ export interface GameState {
    * 奇数ターンの基礎が偶数ターンと揃って 3/3 になる)
    */
   manaBonus: number;
+  /**
+   * 到達した最も深い深度。全滅しても更新する (帰還時にだけ更新すると、全滅した回の記録が
+   * 残らない)。探索の一覧では奈落の行にだけ「最深 N 階」として出す (docs/plan.md「奈落」)
+   */
+  deepest: number;
   run: RunState | null;
   battle: BattleState | null;
   /** battle が何の遭遇から始まったか。battle が null のときは null */
@@ -380,6 +392,7 @@ export function newGame(seed: string): GameState {
     potionPrice: POTION_PRICE_BASE,
     unlocked: 1,
     manaBonus: 0,
+    deepest: 0,
     run: null,
     battle: null,
     battleKind: null,
@@ -662,8 +675,10 @@ function settleBattle(state: GameState, run: RunState, rng: Rng): void {
           : kind === 'caravan'
             ? normalGold + Math.round((CARAVAN_RAID_GOLD_BASE + run.depth * CARAVAN_RAID_GOLD_PER_DEPTH) * (0.8 + 0.4 * rng.next()))
             : normalGold;
-    // 商才 (goldRate) パッシブを前衛に持つほど獲得金が増える (docs/plan.md「デメリットスキル」寄りのパッシブ)
-    const gold = Math.round(baseGold * (1 + goldRateBonus(run.party)));
+    // 商才 (goldRate) パッシブを前衛に持つほど獲得金が増える (docs/plan.md「デメリットスキル」寄りのパッシブ)。
+    // 奈落係数 (abyssMul) も報酬の金に掛ける。深いほど稼ぎも増えないと、潜り続ける動機が
+    // 「記録」だけになって金の使い道と繋がらなくなるため (docs/batch-abyss.md 2 節)
+    const gold = Math.round(baseGold * abyssMul(run.depth) * (1 + goldRateBonus(run.party)));
     run.gold += gold;
     addLog(state, 'good', `${gold} G を得た。`);
     if (kind === 'caravan') {
@@ -680,7 +695,8 @@ function settleBattle(state: GameState, run: RunState, rng: Rng): void {
     state.battle = null;
     state.battleKind = null;
     if (wasBoss) {
-      // 中層 (区画 2) のボスを倒すと、マナ払い出しの奇数ターンが底上げされ 3/3 の律動になる
+      // 中層 (区画 2) のボスを倒すと、マナ払い出しの奇数ターンが底上げされ 3/3 の律動になる。
+      // 奈落 (区画 4) では増やさない (run.sectorId === 2 限定の判定のまま満たされる)
       if (run.sectorId === 2) state.manaBonus = Math.max(state.manaBonus, 1);
       // 今は迷宮 1 本 (DUNGEONS[0]) だけなので決め打ちで参照する。迷宮が増えたら
       // run 側に迷宮 id を持たせて引き直す形になる
@@ -688,7 +704,14 @@ function settleBattle(state: GameState, run: RunState, rng: Rng): void {
         state.unlocked += 1;
         addLog(state, 'good', `${sectorById(state.unlocked).name}への道が開いた。`);
       }
-      finishRun(state, true, rng);
+      if (run.sectorId === 4) {
+        // 奈落は撃破 = 自動帰還にしない。「潜り続ける」か「帰還する」かを選ばせる
+        // (docs/plan.md「奈落」)。finishRun は呼ばず、選択の分岐だけ立てる
+        run.abyssChoice = true;
+        addLog(state, 'warn', '守護者は沈んだ。さらに潜るか、ここで戻るか。');
+      } else {
+        finishRun(state, true, rng);
+      }
     }
     return;
   }
@@ -717,8 +740,10 @@ export function step(state: GameState, action: Action): void {
 
     case 'advance': {
       const run = state.run;
-      if (!run || run.pending || run.atBoss || state.battle) break;
+      // abyssChoice の間は「潜り続ける/帰還する」で決着するまで先へ進めない
+      if (!run || run.pending || run.atBoss || run.abyssChoice || state.battle) break;
       advance(run, rng);
+      state.deepest = Math.max(state.deepest, run.depth);
       if (run.atBoss) addLog(state, 'warn', '広間に出た。奥に守護者がいる。');
       break;
     }
@@ -727,7 +752,7 @@ export function step(state: GameState, action: Action): void {
       const run = state.run;
       if (!run || state.battle) break;
       if (run.atBoss) {
-        const boss = makeBoss(run.sectorId, rng);
+        const boss = makeBoss(run.sectorId, rng, run.depth);
         enterBattle(state, run, 'boss', boss, `${boss.name} が立ちはだかる。`, rng);
         break;
       }
@@ -851,6 +876,22 @@ export function step(state: GameState, action: Action): void {
           // 二択を持たないイベントには resolve-alt が来ない想定。何もしない
           break;
       }
+      break;
+    }
+
+    case 'abyss-continue': {
+      const run = state.run;
+      if (!run || !run.abyssChoice || state.battle) break;
+      continueAbyss(run);
+      addLog(state, 'info', 'さらに奈落へ潜り続けた。');
+      break;
+    }
+
+    case 'abyss-return': {
+      const run = state.run;
+      if (!run || !run.abyssChoice || state.battle) break;
+      addLog(state, 'info', '戦利品を抱え、奈落から引き返した。');
+      finishRun(state, true, rng);
       break;
     }
 
@@ -1262,12 +1303,14 @@ function toDungeonView(run: RunState, potions: number, owned: readonly Character
     kind: 'dungeon',
     sectorName: sector.name,
     depth: run.depth,
-    goal: sector.depth,
+    // 奈落 (endless) は終わりが無いので目標深度を出す意味が無い (docs/plan.md「奈落」)
+    goal: sector.endless ? null : sector.depth,
     hp: run.hp,
     maxHp: run.maxHp,
     // 通路の見た目だけを 4 段で回す。ゲーム状態ではない
     corridor: run.depth % 4,
     event: pending,
+    abyssChoice: run.abyssChoice,
     front: run.party.front.map((f) => ({ character: f ? fighterCard(f, owned) : null })),
     frontCount: run.party.front.filter((f) => f !== null).length,
     reserveCount: run.party.reserve.length,
@@ -1310,7 +1353,10 @@ function toTownView(state: GameState): TownView {
     sectors: DUNGEONS[0].sectors.map((s) => ({
       id: s.id,
       name: s.name,
+      from: s.from,
       depth: s.depth,
+      endless: s.endless,
+      deepest: state.deepest,
       unlocked: s.id <= state.unlocked,
     })),
     tavern: state.tavern.map((entry) => {
