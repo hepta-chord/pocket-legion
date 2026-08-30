@@ -164,6 +164,7 @@ function enemy(over: Partial<EnemyDef> = {}): EnemyDef {
     resist: null,
     bigEvery: 99,
     bigMul: 2,
+    bigName: '大技',
     downEvery: null,
     pattern: [{ kind: 'attack' }],
     groupSize: 1,
@@ -177,9 +178,9 @@ function boss(over: Partial<EnemyDef> = {}): EnemyDef {
   return enemy({ isBoss: true, downEvery: null, ...over });
 }
 
-function battleOf(front: Fighter[], reserve: Fighter[] = [], foe: EnemyDef = enemy()) {
+function battleOf(front: Fighter[], reserve: Fighter[] = [], foe: EnemyDef = enemy(), rng: Rng = new Rng(1)) {
   const party = newParty(front, reserve);
-  return startBattle(party, 100, 100, foe);
+  return startBattle(party, 100, 100, foe, rng);
 }
 
 // ---------------------------------------------------------------------------
@@ -213,7 +214,7 @@ describe('マナの奇偶', () => {
 
   it('manaBonus は奇数ターンの基礎に乗る (中層クリアで 3/3 になる)', () => {
     const party = newParty([fighter('a')]);
-    const state = startBattle(party, 100, 100, enemy(), 1);
+    const state = startBattle(party, 100, 100, enemy(), new Rng(1), 1);
     expect(state.turn).toBe(1);
     expect(state.mana).toBe(3); // 2 + manaBonus(1)
     endTurn(state, new Rng(1));
@@ -250,14 +251,14 @@ describe('魔法・必殺スキル', () => {
   it('使うたび出撃を通してコストが上がり、次の戦闘にも残る', () => {
     const f = fighter('a', 'kingdom', [FIRE]);
     const party = newParty([f]);
-    let state = startBattle(party, 100, 100, enemy());
+    let state = startBattle(party, 100, 100, enemy(), new Rng(1));
     const rng = new Rng(1);
     state.mana = 10;
     useSkill(state, 0, 0, rng);
     expect(effectiveCost(f.skills[0])).toBe(3);
     endTurn(state, rng);
     expect(effectiveCost(f.skills[0])).toBe(3);
-    state = startBattle(party, 100, 100, enemy());
+    state = startBattle(party, 100, 100, enemy(), new Rng(1));
     expect(effectiveCost(f.skills[0])).toBe(3);
   });
 
@@ -308,7 +309,7 @@ describe('防御', () => {
     for (let n = 0; n <= DEFENSE_MAX; n++) {
       const foe = boss({ attack: 1000, bigMul: 1, bigEvery: 1 });
       const party = newParty([fighter('a')]);
-      const state = startBattle(party, 100000, 100000, foe);
+      const state = startBattle(party, 100000, 100000, foe, new Rng(1));
       state.mana = 10;
       for (let i = 0; i < n; i++) useDefense(state);
       endTurn(state, new Rng(7));
@@ -385,7 +386,7 @@ describe('鼓舞・ガード (ward) のスタック', () => {
     // 大技 (乱数無し、決め打ちダメージ) で検算する
     const foe = boss({ attack: 1000, bigMul: 1, bigEvery: 1 });
     const party = newParty([fighter('a', 'kingdom', [WARD, WARD, WARD])]);
-    const state = startBattle(party, 100000, 100000, foe);
+    const state = startBattle(party, 100000, 100000, foe, new Rng(1));
     state.mana = 10;
     const rng = new Rng(1);
     for (let i = 0; i < 4; i++) useDefense(state);
@@ -426,6 +427,9 @@ describe('スタン', () => {
   });
 
   it('ボスのスタンがランダム人数を巻き込む', () => {
+    // ボスは通常行動を 2 回行うので、パターンがスタン 1 種類だけでも 1 ターンに 2 回スタンが入る。
+    // 1 回ごとに 2 人 (min=max=2) を選ぶが、2 回ぶんが重なるかどうかは乱数次第なので、
+    // 巻き込む人数は「2 人以上 4 人以下」の範囲になる (前衛は 4 人)
     const foe = boss({ attack: 0, bigEvery: 99, pattern: [{ kind: 'stun', min: 2, max: 2 }] });
     const state = battleOf(
       [fighter('a'), fighter('b'), fighter('c'), fighter('d')],
@@ -434,7 +438,8 @@ describe('スタン', () => {
     );
     endTurn(state, new Rng(3));
     const stunned = state.party.front.filter((f) => f && f.stunnedUntil >= state.turn);
-    expect(stunned).toHaveLength(2);
+    expect(stunned.length).toBeGreaterThanOrEqual(2);
+    expect(stunned.length).toBeLessThanOrEqual(4);
   });
 
   it('stun-self エフェクトは発動者自身をスタンさせる', () => {
@@ -442,6 +447,20 @@ describe('スタン', () => {
     const self = state.party.front[0]!;
     useSkill(state, 0, 0, new Rng(1));
     expect(self.stunnedUntil).toBeGreaterThanOrEqual(state.turn);
+  });
+
+  it('スタンは戦闘をまたいで持ち越さない (次の startBattle で行動できる)', () => {
+    const front = fighter('a', 'kingdom', [STUN_SELF, SLASH]);
+    const party = newParty([front]);
+    const first = startBattle(party, 100, 100, enemy({ maxHp: 99999 }), new Rng(1));
+    useSkill(first, 0, 0, new Rng(1)); // stun-self。以後このターンは行動不可になる
+    expect(front.stunnedUntil).toBeGreaterThanOrEqual(first.turn);
+
+    // ターン番号は戦闘ごとに 1 から数え直すので、stunnedUntil を持ち越すと
+    // 次の戦闘の 1 ターン目からずっとスタン扱いになってしまう。startBattle で解除する
+    const next = startBattle(party, 100, 100, enemy({ maxHp: 99999 }), new Rng(1));
+    expect(front.stunnedUntil).toBe(0);
+    expect(whyCannotUse(next, 0, 1)).toBeNull(); // 攻撃 (SLASH) が使える = 気絶していない
   });
 });
 
@@ -551,6 +570,31 @@ describe('予告', () => {
   it('ダウン攻撃を持たない敵は downCountdown が null', () => {
     const state = battleOf([fighter('a')], [], enemy({ downEvery: null }));
     expect(state.enemy.downCountdown).toBeNull();
+  });
+});
+
+describe('次ターンの行動予告 (nextActions)', () => {
+  it('雑魚は 1 個、ボスは 2 個の行動を戦闘開始時から持っている', () => {
+    const foe = battleOf([fighter('a')], [], enemy({ bigEvery: 99, pattern: [{ kind: 'attack' }] })).enemy.nextActions;
+    expect(foe).toHaveLength(1);
+    const bossState = battleOf([fighter('a')], [], boss({ bigEvery: 99, pattern: [{ kind: 'attack' }] }));
+    expect(bossState.enemy.nextActions).toHaveLength(2);
+  });
+
+  it('大技のターンは nextActions が [big] になり、実行される行動と一致する', () => {
+    const state = battleOf([fighter('a')], [], enemy({ attack: 100, bigMul: 1, bigEvery: 1 }));
+    expect(state.enemy.nextActions).toEqual([{ kind: 'big' }]);
+    endTurn(state, new Rng(1));
+    // 大技は決め打ちダメージ (乱数を挟まない) なので、実際に大技が発動したことを被害量で確認できる
+    expect(state.hp).toBe(state.maxHp - 100);
+  });
+
+  it('ターン終了のたびに次ターンぶんへ引き直される', () => {
+    const state = battleOf([fighter('a')], [], enemy({ bigEvery: 99, pattern: [{ kind: 'attack' }] }));
+    const before = state.enemy.nextActions;
+    endTurn(state, new Rng(1));
+    expect(state.enemy.nextActions).not.toBe(before); // 新しい配列に差し替わっている
+    expect(state.enemy.nextActions).toEqual([{ kind: 'attack' }]); // パターンが 1 種類だけなので中身は変わらない
   });
 });
 
@@ -717,7 +761,7 @@ describe('物理コストの持ち越し (バグ修正)', () => {
   it('戦闘中に勝って turnBump が残っても、次の startBattle で素のコストに戻る', () => {
     const front = fighter('a');
     const party = newParty([front]);
-    const state = startBattle(party, 100, 100, enemy({ maxHp: 999 }));
+    const state = startBattle(party, 100, 100, enemy({ maxHp: 999 }), new Rng(1));
     const rng = new Rng(1);
     useSkill(state, 0, 0, rng); // 物理を 1 発。turnBump が 1 に上がる
     expect(effectiveCost(front.skills[0])).toBe(1);
@@ -727,7 +771,7 @@ describe('物理コストの持ち越し (バグ修正)', () => {
     expect(state.outcome).toBe('victory');
     expect(front.skills[0].turnBump).toBe(1); // 持ち越ったままになっている
 
-    const next = startBattle(party, 100, 100, enemy());
+    const next = startBattle(party, 100, 100, enemy(), new Rng(1));
     expect(effectiveCost(front.skills[0])).toBe(0);
     expect(next.party.front[0]?.skills[0].turnBump).toBe(0);
   });
@@ -736,7 +780,7 @@ describe('物理コストの持ち越し (バグ修正)', () => {
     const reserveMember = fighter('b');
     reserveMember.skills[0].turnBump = 1;
     const party = newParty([fighter('a')], [reserveMember]);
-    startBattle(party, 100, 100, enemy());
+    startBattle(party, 100, 100, enemy(), new Rng(1));
     expect(reserveMember.skills[0].turnBump).toBe(0);
   });
 });

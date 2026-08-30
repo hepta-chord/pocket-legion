@@ -146,9 +146,17 @@ export interface BattleView {
   combo: number;
   /** 鼓舞スタック。0 なら支援中でない */
   cheerStacks: number;
+  /** 鼓舞の残りターン。cheerStacks が 0 のときは意味を持たない */
+  cheerTurns: number;
+  /** 鼓舞スタックの上限枚数 (アイコンのドット表示に使う) */
+  cheerMax: number;
   /** ward スタック。0 なら被ダメージ減の支援中でない */
   wardStacks: number;
-  /** 逃げるの宣言から発動までの残りターン。null は宣言していない */
+  /** ward (ガード) の残りターン。wardStacks が 0 のときは意味を持たない */
+  wardTurns: number;
+  /** ward スタックの上限枚数 (アイコンのドット表示に使う) */
+  wardMax: number;
+  /** 逃げるの宣言から発動までの残りターン。null は宣言していない (味方の状態アイコンに出す) */
   fleeIn: number | null;
   potions: number;
   /** 敵は常に 1 体。対象選択を無くすための仕様なので単数で持つ */
@@ -160,13 +168,18 @@ export interface BattleView {
     maxHp: number;
     /** 表示用。'物理' | '魔法' | null */
     resist: string | null;
-    /** 大技まであと何ターンか */
+    /** 大技まであと何ターンか。バッジの警告色判定 (あと 1 で強調) に使う */
     bigCountdown: number;
-    /** ダウン攻撃まであと何ターンか。持たない敵は null */
-    downCountdown: number | null;
+    /** 大技の予告バッジに出す書き下しラベル (例: 「毒霧の乱舞 あと3」「大技 あと3」) */
+    bigLabel: string;
+    /** ダウン攻撃の予告バッジに出す書き下しラベル (例: 「ダウン攻撃 あと2」)。持たない敵は null */
+    downLabel: string | null;
     alive: boolean;
     isBoss: boolean;
   };
+  /** 敵の次ターンの行動ラベル (1〜2 個)。ボスは大技・ダウン攻撃のターン以外は 2 回行動するので
+   * 2 つ並ぶ。表示専用で、行動そのものは battle.ts 側で決め、ここでは文字列化した結果だけを持つ */
+  nextActionLabels: string[];
   /** 前衛 6 枠。null は空きスロット */
   slots: ({
     name: string;

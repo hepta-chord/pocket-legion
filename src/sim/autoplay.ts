@@ -218,7 +218,7 @@ export function playSortie(sectorId: number, startDepth: number, rng: Rng): Sort
     }
     maxHp = partyMaxHp(party);
 
-    const state = startBattle(party, hp, maxHp, makeFoe(depth, rng, false, sectorId));
+    const state = startBattle(party, hp, maxHp, makeFoe(depth, rng, false, sectorId), rng);
     let turns = 0;
     while (state.outcome === 'ongoing' && turns < TURN_CAP) {
       playTurn(state, rng);
@@ -257,7 +257,7 @@ export function playSortie(sectorId: number, startDepth: number, rng: Rng): Sort
   }
 
   // 区画の最深部のボス。雑魚と違って長期戦になるので、上限もターン数も別に持つ
-  const boss = startBattle(party, hp, maxHp, makeBoss(sectorId, rng));
+  const boss = startBattle(party, hp, maxHp, makeBoss(sectorId, rng), rng);
   let bossTurns = 0;
   while (boss.outcome === 'ongoing' && bossTurns < BOSS_TURN_CAP) {
     playTurn(boss, rng);

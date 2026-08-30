@@ -50,6 +50,8 @@ export function makeFoe(depth: number, rng: Rng, elite = false, sectorId = 1): E
     isBoss: false,
     bigEvery: rng.int(3, 4),
     bigMul: 2.2,
+    // 雑魚の大技は個体ごとの技名を持たない。予告バッジには総称の「大技」を出す
+    bigName: '大技',
     downEvery: hasDownstrike ? rng.int(4, 6) : null,
     pattern,
   };
@@ -60,13 +62,15 @@ interface BossSpec {
   maxHp: number;
   attack: number;
   defense: number;
+  /** 大技の名前。ボスは固有の技名を予告バッジに出す */
+  bigName: string;
 }
 
 /** 区画ごとのボス。名前と強さは深度帯に合わせて 3 段階で決め打ちする */
 const BOSSES: readonly BossSpec[] = [
-  { name: '穴蜘蛛の女王', maxHp: 2200, attack: 40, defense: 40 },
-  { name: '骨の王', maxHp: 5000, attack: 70, defense: 70 },
-  { name: '深淵の使者', maxHp: 9000, attack: 100, defense: 100 },
+  { name: '穴蜘蛛の女王', maxHp: 2200, attack: 40, defense: 40, bigName: '毒霧の乱舞' },
+  { name: '骨の王', maxHp: 5000, attack: 70, defense: 70, bigName: '亡者の号令' },
+  { name: '深淵の使者', maxHp: 9000, attack: 100, defense: 100, bigName: '深淵からの侵蝕' },
 ];
 
 /** ボスのダウン攻撃の間隔 (ターン)。「5 ターンごとに 1 人程度」の目安 */
@@ -99,6 +103,7 @@ export function makeBoss(sectorId: number, rng: Rng): EnemyDef {
     isBoss: true,
     bigEvery: 3,
     bigMul: 6.0,
+    bigName: spec.bigName,
     downEvery: BOSS_DOWN_EVERY,
     pattern,
   };
