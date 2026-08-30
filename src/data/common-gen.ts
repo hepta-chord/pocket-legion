@@ -281,7 +281,8 @@ const lastStand: ActionSkillDef = {
   shortName: '捨身',
   category: 'ultimate',
   baseCost: 2,
-  effect: { kind: 'attack', target: 'one', power: 2.8 },
+  // 使えば自分がダウンする (出撃を通して実質 1 発) ので、倍率はインローと並ぶ 3.0 に置く
+  effect: { kind: 'attack', target: 'one', power: 3.0 },
   selfDown: true,
 };
 
