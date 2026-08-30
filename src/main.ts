@@ -56,6 +56,14 @@ function button(label: string, action: Action, disabled = false): HTMLButtonElem
 // ---------------------------------------------------------------------------
 // 戦闘画面
 
+function renderCombo(s: BattleView): void {
+  const el = document.createElement('p');
+  el.className = 'combo' + (s.combo > 0 ? ' active' : '');
+  el.textContent =
+    s.combo > 0 ? `コンボ ${s.combo} (×${(1 + 0.15 * s.combo).toFixed(2)})` : 'コンボ 0';
+  panel.append(el);
+}
+
 function renderEnemies(s: BattleView): void {
   const box = document.createElement('div');
   box.className = 'enemies';
@@ -148,6 +156,7 @@ function renderControls(s: BattleView): void {
   const box = document.createElement('div');
   box.className = 'controls';
   box.append(button(`ガード (${s.guard}/${s.guardMax})`, { type: 'battle-guard' }, !s.canGuard));
+  box.append(button(`回復薬 (${s.potions})`, { type: 'potion' }, s.potions <= 0));
 
   const swapDisabled = s.swapCooldown > 0 || s.reserve.length === 0;
   const swapBtn = document.createElement('button');
@@ -258,6 +267,7 @@ function renderSwapPanel(s: BattleView): void {
 
 function renderBattle(s: BattleView): void {
   status.textContent = `HP ${s.hp}/${s.maxHp}  マナ ${s.mana}/${s.manaCap}  ガード ${s.guard}/${s.guardMax}  バリア ${s.barrier ? '有' : '無'}  ターン ${s.turn}`;
+  renderCombo(s);
   renderEnemies(s);
   if (swapMode) {
     renderSwapPanel(s);
@@ -274,7 +284,7 @@ function renderPanel(vm: ViewModel): void {
   const s = vm.screen;
 
   if (s.kind === 'town') {
-    status.textContent = `所持金 ${s.gold} G`;
+    status.textContent = `所持金 ${s.gold} G  回復薬 ${s.potions}`;
     const head = document.createElement('p');
     head.className = 'lead';
     head.textContent = 'どこへ潜るか。';
@@ -288,11 +298,56 @@ function renderPanel(vm: ViewModel): void {
         ),
       );
     }
+
+    const tavernHead = document.createElement('p');
+    tavernHead.className = 'lead';
+    tavernHead.textContent = '酒場';
+    panel.append(tavernHead);
+    if (s.tavern.length === 0) {
+      const none = document.createElement('p');
+      none.className = 'body';
+      none.textContent = '雇える顔ぶれがいない。';
+      panel.append(none);
+    }
+    for (const t of s.tavern) {
+      const card = document.createElement('div');
+      card.className = 'card';
+      const name = document.createElement('p');
+      name.className = 'card-name';
+      name.textContent = `${t.name} (${t.faction})`;
+      const skills = document.createElement('p');
+      skills.className = 'body';
+      skills.textContent = t.skills.join('・');
+      card.append(name, skills, button(`雇う (${t.price} G)`, { type: 'hire', id: t.id }, !t.affordable));
+      panel.append(card);
+    }
+
+    const rosterHead = document.createElement('p');
+    rosterHead.className = 'lead';
+    rosterHead.textContent = `所持キャラ (${s.roster.length})`;
+    panel.append(rosterHead);
+    for (const r of s.roster) {
+      const card = document.createElement('div');
+      card.className = 'card';
+      const name = document.createElement('p');
+      name.className = 'card-name';
+      name.textContent = `${r.name} (${r.faction} / ${r.rarity === 'rare' ? 'レア' : 'コモン'})`;
+      const skills = document.createElement('p');
+      skills.className = 'body';
+      skills.textContent = r.skills.join('・');
+      card.append(name, skills);
+      panel.append(card);
+    }
     return;
   }
 
   if (s.kind === 'dungeon') {
     status.textContent = `${s.sectorName}  深度 ${s.depth}/${s.goal}  HP ${s.hp}/${s.maxHp}`;
+    const partyLine = document.createElement('p');
+    partyLine.className = 'body';
+    partyLine.textContent = `前衛 ${s.frontCount} 人 / 控え ${s.reserveCount} 人 / ダウン ${s.downedCount} 人`;
+    panel.append(partyLine);
+
     if (s.event) {
       const title = document.createElement('p');
       title.className = 'lead';
@@ -301,9 +356,11 @@ function renderPanel(vm: ViewModel): void {
       body.className = 'body';
       body.textContent = s.event.body;
       panel.append(title, body, button(s.event.action, { type: 'resolve' }));
+      if (s.event.alt) panel.append(button(s.event.alt, { type: 'resolve-alt' }));
     } else {
       panel.append(button('進む', { type: 'advance' }));
     }
+    panel.append(button(`回復薬 (${s.potions})`, { type: 'potion' }, s.potions <= 0));
     panel.append(button('引き返す', { type: 'retreat' }));
     return;
   }

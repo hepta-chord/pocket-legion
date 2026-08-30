@@ -118,6 +118,18 @@ button:active:not(:disabled) {
 
 /* 戦闘画面 -------------------------------------------------------------- */
 
+/* コンボは 0 のとき目立たせない。積み上がってはじめて色を付ける */
+.combo {
+  margin: 0;
+  color: var(--dim);
+  font-size: 13px;
+}
+
+.combo.active {
+  color: var(--warn);
+  font-weight: bold;
+}
+
 .enemies {
   display: flex;
   flex-direction: column;
