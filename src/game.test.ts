@@ -356,6 +356,22 @@ describe('酒場', () => {
     }
     expect(sawRare).toBe(true);
   });
+
+  it('1 回の品揃えの中で名前が重複しない', () => {
+    for (let seed = 0; seed < 200; seed++) {
+      const state = newGame(`NAME${seed}`);
+      const names = state.tavern.map((c) => c.name);
+      expect(new Set(names).size).toBe(names.length);
+    }
+  });
+
+  it('陣営が 4 つあり品揃えは 3 人なので、可能な範囲で陣営が散らばる (3 枠すべて同じ陣営にならない)', () => {
+    for (let seed = 0; seed < 200; seed++) {
+      const state = newGame(`FACTION${seed}`);
+      const factions = new Set(state.tavern.map((c) => c.faction));
+      expect(factions.size).toBeGreaterThan(1);
+    }
+  });
 });
 
 describe('出撃時のパーティ編成', () => {

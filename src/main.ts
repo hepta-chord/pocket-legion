@@ -6,7 +6,6 @@ import { eventIconFor } from './render/event-icons';
 import { portraitFor } from './render/portraits';
 import type { Renderer } from './render/renderer';
 import { TextRenderer } from './render/text-renderer';
-import { TOWN_ART } from './render/town-art';
 import { randomSeedString } from './rng';
 import { clearSave, loadGame, saveGame } from './save';
 import type { BattleView, DungeonView, FormationCharacterView, TownView, ViewModel } from './view';
@@ -203,7 +202,8 @@ function renderStatus(vm: ViewModel): void {
 
 // 拠点のトップ (行き先の一覧)。迷宮 (浅層・中層・深層) と酒場を同じ一覧に並べ、
 // 探索でイベントを解決するのと同じ位置・同じ操作感にする (ドリルダウンはやめる)。
-// ステージの奥にはロビー (迷宮都市) の情景が常に見えている (renderPortrait 側)
+// 一覧が主役なので、拠点では情景アート (#portrait) を出さずステージを一覧いっぱいに使う
+// (renderPortrait 側。カードの隙間や見出しにアートが透けて読みにくくなるのを避けるため)
 function renderHomeStage(s: TownView): void {
   const head = document.createElement('p');
   head.className = 'lead';
@@ -362,16 +362,9 @@ function renderPortrait(vm: ViewModel): void {
   portraitEl.innerHTML = '';
   portraitEl.classList.remove('visible');
 
-  // 拠点は「今どこにいるか」を探索・戦闘と同じ固定枠で見せる。ページによらず同じ絵にする
-  // (拠点はダンジョンのように種別が複数無いので、迷宮都市の情景 1 枚で足りる)
-  if (vm.screen.kind === 'town') {
-    portraitEl.classList.add('visible');
-    const art = document.createElement('pre');
-    art.className = 'portrait-art town';
-    art.textContent = TOWN_ART.join('\n');
-    portraitEl.append(art);
-    return;
-  }
+  // 拠点は行き先の一覧 (renderHomeStage) が主役なので、情景アートは出さない。
+  // #portrait を非表示のままにして、#stage-body の一覧がステージいっぱいに使えるようにする
+  if (vm.screen.kind === 'town') return;
 
   if (vm.screen.kind === 'battle') {
     portraitEl.classList.add('visible');

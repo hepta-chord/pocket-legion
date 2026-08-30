@@ -29,7 +29,7 @@ import {
 } from './battle';
 import { CHARACTERS, skillLabels, type CharacterEntry } from './data/characters';
 import { generateCommon } from './data/common-gen';
-import { FACTION_NAMES, FACTIONS } from './data/factions';
+import { FACTION_NAMES, FACTIONS, type Faction } from './data/factions';
 import { makeBoss, makeFoe } from './data/enemies';
 import { DUNGEONS } from './data/dungeons';
 import { sectorById } from './data/sectors';
@@ -176,23 +176,55 @@ function hasUnownedRare(owned: readonly CharacterEntry[], source: 'tavern' | 'du
 }
 
 /**
- * 酒場の品揃えを引き直す。コモンはその場で生成し (陣営はランダム)、
+ * コモンを 1 人生成する。酒場の 1 回の品揃えの中で同じ名前が並ぶと見分けがつかないので、
+ * 名前が使用済みなら生成し直す (陣営ごとの名前候補は 8 個あるので、数回のやり直しで
+ * まず解ける。上限を切って無限ループだけは避ける)。
+ * 陣営も、まだ品揃えに出ていないものを優先して選ぶ (3 枠すべて同じ陣営になるのを避ける。
+ * 4 陣営とも出尽くしていれば重複を許す)
+ */
+function pickCommonAvoidingDuplicates(
+  state: GameState,
+  rng: Rng,
+  usedNames: ReadonlySet<string>,
+  usedFactions: ReadonlySet<Faction>,
+): CharacterEntry {
+  const freshFactions = FACTIONS.filter((f) => !usedFactions.has(f));
+  const factionPool = freshFactions.length > 0 ? freshFactions : FACTIONS;
+  const faction = rng.pick(factionPool);
+
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const candidate = generateCommon(faction, rng, state.nextCommonId++);
+    if (!usedNames.has(candidate.name)) return candidate;
+  }
+  // 20 回やり直しても衝突するのは名前候補が尽きるほど狭いときだけで、実運用では起きない想定。
+  // それでも固まらないよう、最後は重複を許して返す
+  return generateCommon(faction, rng, state.nextCommonId++);
+}
+
+/**
+ * 酒場の品揃えを引き直す。コモンはその場で生成し (陣営はランダム、ただし品揃え内で散らす)、
  * 低確率 (TAVERN_RARE_CHANCE) で source: 'tavern' の未所持レアに差し替える。
- * レアは酒場の 1 回の品揃えの中で同じ人が重複しないようにする
+ * レア・コモンを問わず、酒場の 1 回の品揃えの中で同じ人・同じ名前が重複しないようにする
  */
 function rerollTavern(state: GameState, rng: Rng): void {
   const picked: CharacterEntry[] = [];
   const usedRareIds = new Set<string>();
+  const usedNames = new Set<string>();
+  const usedFactions = new Set<Faction>();
   for (let i = 0; i < TAVERN_SIZE; i++) {
     const rareCandidates = unownedRares(state.owned, 'tavern').filter((c) => !usedRareIds.has(c.id));
     if (rareCandidates.length > 0 && rng.chance(TAVERN_RARE_CHANCE)) {
       const rare = rng.pick(rareCandidates);
       usedRareIds.add(rare.id);
+      usedNames.add(rare.name);
+      usedFactions.add(rare.faction);
       picked.push(rare);
       continue;
     }
-    const faction = rng.pick(FACTIONS);
-    picked.push(generateCommon(faction, rng, state.nextCommonId++));
+    const common = pickCommonAvoidingDuplicates(state, rng, usedNames, usedFactions);
+    usedNames.add(common.name);
+    usedFactions.add(common.faction);
+    picked.push(common);
   }
   state.tavern = picked;
 }
