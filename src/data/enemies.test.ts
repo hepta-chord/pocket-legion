@@ -2,21 +2,24 @@ import { describe, expect, it } from 'vitest';
 import { Rng } from '../rng';
 import { makeBoss, makeFoe } from './enemies';
 
+// テストは既存 3 区画 (浅層/中層/深層) の挙動だけを見るので、depth には各区画のボス深度
+// (sector.depth。10/20/30) をそのまま渡す。奈落係数 (abyssMul) は depth <= 30 で 1 になるため、
+// 数値には影響しない (makeBoss のシグネチャ変更に伴う最小修正)
 describe('makeBoss', () => {
   it('浅層のダウン攻撃は 10 ターンに 1 回、中層・深層はそこから少し詰める', () => {
-    expect(makeBoss(1, new Rng(1)).downEvery).toBe(10);
-    expect(makeBoss(2, new Rng(1)).downEvery).toBe(9);
-    expect(makeBoss(3, new Rng(1)).downEvery).toBe(8);
+    expect(makeBoss(1, new Rng(1), 10).downEvery).toBe(10);
+    expect(makeBoss(2, new Rng(1), 20).downEvery).toBe(9);
+    expect(makeBoss(3, new Rng(1), 30).downEvery).toBe(8);
   });
 
   it('スタンは stunEvery のクールタイム制で持ち、行動枠の抽選には乗らない', () => {
-    const boss = makeBoss(2, new Rng(1));
+    const boss = makeBoss(2, new Rng(1), 20);
     expect(boss.stunEvery).not.toBeNull();
     for (const slot of boss.slots) expect(slot.some((c) => c.action.kind === 'stun')).toBe(false);
   });
 
   it('2 枠持ち、枠 1 は攻撃 9:何もしない 1、枠 2 は鼓舞・防御を含む重み付けになっている', () => {
-    const boss = makeBoss(1, new Rng(1));
+    const boss = makeBoss(1, new Rng(1), 10);
     expect(boss.slots).toHaveLength(2);
     const [slot1, slot2] = boss.slots;
     expect(slot1.map((c) => c.action.kind).sort()).toEqual(['attack', 'none'].sort());
@@ -28,15 +31,15 @@ describe('makeBoss', () => {
 
   it('深いほど枠 2 の攻撃寄りの重みが増える (浅層 < 中層 < 深層)', () => {
     const weightOf = (sectorId: number, kind: 'attack' | 'cheer') =>
-      makeBoss(sectorId, new Rng(1)).slots[1].find((c) => c.action.kind === kind)?.weight ?? 0;
+      makeBoss(sectorId, new Rng(1), sectorId * 10).slots[1].find((c) => c.action.kind === kind)?.weight ?? 0;
     expect(weightOf(1, 'attack')).toBeLessThan(weightOf(2, 'attack'));
     expect(weightOf(2, 'attack')).toBeLessThan(weightOf(3, 'attack'));
     expect(weightOf(1, 'cheer')).toBeGreaterThan(weightOf(3, 'cheer'));
   });
 
   it('浅層は中層・深層よりスタンの間隔が長い (猶予がある)', () => {
-    const shallow = makeBoss(1, new Rng(1));
-    const mid = makeBoss(2, new Rng(1));
+    const shallow = makeBoss(1, new Rng(1), 10);
+    const mid = makeBoss(2, new Rng(1), 20);
     expect(shallow.stunEvery!).toBeGreaterThan(mid.stunEvery!);
   });
 });

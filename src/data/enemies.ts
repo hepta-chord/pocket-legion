@@ -34,6 +34,16 @@ function bossStunRange(sectorId: number): { min: number; max: number } {
 const NO_STUN_RANGE = { min: 1, max: 1 };
 
 /**
+ * 奈落係数。深度 30 を超えたぶんだけ敵の HP・攻撃力と報酬の金に掛かる。
+ * 基礎式 (深度の一次) の上にこの一次の係数が乗るので実質二次で伸び、
+ * 主人公以外の成長が頭打ちになった部隊はどこかで必ず壁に当たる
+ * (docs/plan.md「奈落」)
+ */
+export function abyssMul(depth: number): number {
+  return depth <= 30 ? 1 : 1 + 0.04 * (depth - 30);
+}
+
+/**
  * 通常戦・強敵の雑魚を深度なりに生成する。elite なら HP と攻撃力を 1.5 倍にする。
  *
  * ダウン攻撃・スタンは雑魚の一部だけが持つ (docs/plan.md「敵の行動と予告」)。
@@ -44,7 +54,8 @@ const NO_STUN_RANGE = { min: 1, max: 1 };
  */
 export function makeFoe(depth: number, rng: Rng, elite = false): EnemyDef {
   const groupSize = rng.int(1, Math.min(3, 1 + Math.floor(depth / 5)));
-  const mul = elite ? 1.5 : 1;
+  // elite 倍率と奈落係数は別掛け (奈落の強敵は両方が乗って重くなる)
+  const mul = (elite ? 1.5 : 1) * abyssMul(depth);
   // 耐性なしが主で、持ちが出たら苦戦する回にする。
   // 主力が物理の世界なので、物理耐性のほうがきつい壁として多めに出る
   const resistRoll = rng.next();
@@ -209,15 +220,25 @@ function bossStunEvery(sectorId: number, override?: number): number {
  * 同じクールタイム制 (stunEvery) にしてあり、行動枠の抽選には乗らない
  * (乗せると、2 枠と合わせて毎ターン頻繁にスタンが飛んでしまう)。予告もしない。
  * どちらの特殊行動のターンでもなければ、BOSS_SLOT1 + spec.slot2 (2 枠) を引く
+ *
+ * 奈落 (sectorId 4) は新造せず、既存 3 体を 10 階ごとにローテーションで再登場させる
+ * (深度 40 = 穴蜘蛛の女王、50 = 骨の王、60 = 八岐大蛇、70 = また穴蜘蛛…)。
+ * spec の素の値は深層基準 (穴蜘蛛 1200 など) のままなので、奈落の穴蜘蛛は深層の骨の王より
+ * 弱い個体として出る。10 階ごとの山に強弱の波が出るほうが単調にならないので、これは意図どおり
+ * (docs/batch-abyss.md 3 節)。downEvery/stunEvery/stunRange は深層と同じ扱いに固定する
  */
-export function makeBoss(sectorId: number, rng: Rng): EnemyDef {
-  const spec = BOSSES[Math.min(sectorId, BOSSES.length) - 1] ?? BOSSES[BOSSES.length - 1];
+export function makeBoss(sectorId: number, rng: Rng, depth: number): EnemyDef {
+  const specIndex = sectorId === 4 ? ((depth / 10 - 4) % 3 + 3) % 3 : Math.min(sectorId, BOSSES.length) - 1;
+  const spec = BOSSES[specIndex] ?? BOSSES[BOSSES.length - 1];
   const resist: Element = rng.chance(0.5) ? 'physical' : 'magic';
+  const mul = abyssMul(depth);
+  // 行動パターンの個性 (downEvery/stunEvery/stunRange) を決める区画は、奈落なら深層 (3) 固定にする
+  const tierId = sectorId === 4 ? 3 : sectorId;
   return {
-    id: `boss-${sectorId}`,
+    id: sectorId === 4 ? `boss-abyss-${depth}` : `boss-${sectorId}`,
     name: spec.name,
-    maxHp: spec.maxHp,
-    attack: spec.attack,
+    maxHp: Math.round(spec.maxHp * mul),
+    attack: Math.round(spec.attack * mul),
     defense: spec.defense,
     resist,
     groupSize: 1,
@@ -228,9 +249,9 @@ export function makeBoss(sectorId: number, rng: Rng): EnemyDef {
     bigDispel: spec.bigDispel,
     attackHits: spec.attackHits,
     bigName: spec.bigName,
-    downEvery: bossDownEvery(sectorId),
-    stunEvery: bossStunEvery(sectorId, spec.stunEveryOverride),
-    stunRange: bossStunRange(sectorId),
+    downEvery: bossDownEvery(tierId),
+    stunEvery: bossStunEvery(tierId, spec.stunEveryOverride),
+    stunRange: bossStunRange(tierId),
     slots: [BOSS_SLOT1, spec.slot2],
   };
 }

@@ -682,7 +682,7 @@ describe('行動枠 (重み付き抽選)', () => {
   it('makeBoss の枠 1 (攻撃9:何もしない1) はおよそ 9 割が攻撃になる (統計)', () => {
     // attack を 0 にして、パーティが被弾で全滅しないようにする (全滅すると outcome が
     // 'ongoing' でなくなり、以後 endTurn が no-op になって nextActions が引き直されなくなるため)
-    const def = makeBoss(1, new Rng(1));
+    const def = makeBoss(1, new Rng(1), 10);
     const foe: EnemyDef = { ...def, attack: 0, bigEvery: 99, downEvery: null, stunEvery: null };
     const state = battleOf([fighter('a')], [], foe, new Rng(1));
     const rng = new Rng(7);
