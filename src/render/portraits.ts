@@ -85,8 +85,8 @@ const BOSS_BONE_KING = [
   '   \\__||_||__/    ',
 ];
 
-/** 深淵の使者 (区画 3 のボス) */
-const BOSS_ABYSS = [
+/** 八岐大蛇 (区画 3 のボス) */
+const BOSS_OROCHI = [
   '    .:*~~~*:.     ',
   '   /  o   o  \\    ',
   '  |    ___    |   ',
@@ -119,7 +119,7 @@ const NAMED: Record<string, readonly string[]> = {
   影の群れ: SHADOW_GROUP,
   穴蜘蛛の女王: BOSS_SPIDER,
   骨の王: BOSS_BONE_KING,
-  深淵の使者: BOSS_ABYSS,
+  八岐大蛇: BOSS_OROCHI,
 };
 
 /** 敵の名前・群れ規模・ボスかどうかからアスキーアートを選ぶ */
