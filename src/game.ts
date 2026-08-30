@@ -23,7 +23,6 @@ import {
   useSkill,
   whyCannotUse,
   type BattleState,
-  type EnemyAction,
   type EnemyDef,
   type EnemyState,
   type Fighter,
@@ -823,6 +822,8 @@ function skillEffectText(def: ActionSkillDef): string {
       return `ガードを ${e.stacks} 枚積む (1 枚につき被ダメージ -20%、3 枚まで)`;
     case 'barrier':
       return '次に来る敵の攻撃を 1 回無効化';
+    case 'dispel':
+      return '敵の鼓舞・ガードのスタックを 1 回で全部剥がす';
     case 'stun-self':
       return '代償として自分がその場でスタンする';
   }
@@ -865,31 +866,6 @@ function downCountdownLabel(e: EnemyState): string | null {
   return e.downCountdown === null ? null : `ダウン攻撃 あと${e.downCountdown}`;
 }
 
-function stunCountdownLabel(e: EnemyState): string | null {
-  return e.stunCountdown === null ? null : `スタン あと${e.stunCountdown}`;
-}
-
-/**
- * 「次ターン」予告パネル用の短い行動名。大技・ダウン攻撃のターンは総称 (技名は出さない。
- * 技名は状態アイコン側の予告バッジで見せる)、それ以外は通常行動の種類をそのまま言葉にする
- */
-function enemyActionLabel(action: EnemyAction): string {
-  switch (action.kind) {
-    case 'attack':
-      return '攻撃';
-    case 'stun':
-      return 'スタン';
-    case 'cheer':
-      return '鼓舞';
-    case 'ward':
-      return '防御';
-    case 'big':
-      return '大技';
-    case 'downstrike':
-      return 'ダウン攻撃';
-  }
-}
-
 function toBattleView(b: BattleState, potions: number, owned: readonly CharacterEntry[]): BattleView {
   const e = b.enemy;
   return {
@@ -920,11 +896,15 @@ function toBattleView(b: BattleState, potions: number, owned: readonly Character
       bigCountdown: e.bigCountdown,
       bigLabel: bigCountdownLabel(e),
       downLabel: downCountdownLabel(e),
-      stunLabel: stunCountdownLabel(e),
+      // 敵の鼓舞・防御。味方の cheerStacks/wardStacks と同じ形で、状態アイコン列に出す
+      // (今まで battle.ts の計算には入っていたのに画面に出ておらず、効果が無いように見えていた不具合)
+      cheerStacks: e.cheer.stacks,
+      cheerTurns: e.cheer.turns,
+      wardStacks: e.ward.stacks,
+      wardTurns: e.ward.turns,
       alive: e.hp > 0,
       isBoss: e.def.isBoss,
     },
-    nextActionLabels: e.hp > 0 ? e.nextActions.map(enemyActionLabel) : [],
     slots: b.party.front.map((f, slot) => {
       if (!f) return null;
       return {

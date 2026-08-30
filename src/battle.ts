@@ -189,6 +189,12 @@ function tickBuffStack(buff: BuffStack): void {
   if (buff.turns <= 0) buff.stacks = 0;
 }
 
+/** バフ剥がし。1 回で全部 0 に戻す (docs/plan.md「バフ剥がし」) */
+function clearBuffStack(buff: BuffStack): void {
+  buff.stacks = 0;
+  buff.turns = 0;
+}
+
 // ---------------------------------------------------------------------------
 // 敵
 
@@ -201,7 +207,25 @@ export type EnemyAction =
   /** 自分を強化する (攻撃力アップ) */
   | { kind: 'cheer' }
   /** 自分の被ダメージを下げる */
-  | { kind: 'ward' };
+  | { kind: 'ward' }
+  /** 味方の鼓舞・ward を剥がす。バフ剥がしは味方と敵の双方に効く型なので、敵側の行動枠にも混ぜられる
+   * (docs/plan.md「バフ剥がし」。今回どの敵にも持たせてはいないが、型としては扱える) */
+  | { kind: 'dispel' }
+  /** 何もしない。行動枠の抽選に「空振り」の候補として混ぜる (docs/plan.md「敵の行動と予告」) */
+  | { kind: 'none' };
+
+/** 行動枠 1 つぶんの候補。重み付き抽選 (rollActionSlots) で 1 つ選ぶ */
+export interface ActionChoice {
+  action: EnemyAction;
+  weight: number;
+}
+
+/**
+ * 行動枠。大技・ダウン攻撃・スタン以外の「通常行動」を、1 ターンに枠の数ぶん引く。
+ * 枠ごとに独立して重み付き抽選するので、同じターンに複数の枠が同じ行動を引くこともある
+ * (docs/plan.md「敵の行動と予告」)
+ */
+export type ActionSlot = ActionChoice[];
 
 export interface EnemyDef {
   id: string;
@@ -222,16 +246,18 @@ export interface EnemyDef {
   downEvery: number | null;
   /**
    * スタンを撃つ間隔 (ターン)。null なら持たない。大技・ダウン攻撃と同じクールタイム制で、
-   * 行動パターンの抽選には乗せない (乗せると頻度が数字で決められず、確率任せで高くなりすぎるため)
+   * 行動枠の抽選には乗せない (乗せると頻度が数字で決められず、確率任せで高くなりすぎるため)。
+   * 大技・ダウン攻撃と違って予告もしない (docs/plan.md「敵の行動と予告」)
    */
   stunEvery: number | null;
   /** スタンが巻き込む人数の範囲。stunEvery を持つ敵だけが使う */
   stunRange: { min: number; max: number };
   /**
-   * 大技・ダウン攻撃・スタン以外の「通常行動」の候補。雑魚は毎ターンここから 1 回、
-   * ボスは大技・ダウン攻撃・スタンのターン以外は 2 回引く (attack / cheer / ward)
+   * 通常行動の行動枠。ボスは 2 枠 (1 枠目はほぼ攻撃、2 枠目で自己強化を織り交ぜる)、
+   * 雑魚は 1 枠 (攻撃寄り) が基本形。行動そのものは予告せず、状態アイコン (鼓舞・ward の
+   * スタック表示) だけで「今どうなっているか」を見せる
    */
-  pattern: EnemyAction[];
+  slots: ActionSlot[];
   /**
    * 元の頭数。敵は常に 1 体として戦うが、群れの規模は全体攻撃の威力に効かせる
    * (敵の表示にもそのまま出す)。1 なら単体
@@ -247,15 +273,17 @@ export interface EnemyState {
   bigCountdown: number;
   /** ダウン攻撃まであと何ターンか。持たない敵は null */
   downCountdown: number | null;
-  /** スタンまであと何ターンか。持たない敵は null */
+  /** スタンまであと何ターンか。持たない敵は null。予告はしない (内部の管理用) */
   stunCountdown: number | null;
   /** 敵の自己鼓舞・自己防御。プレイヤー側の鼓舞・ward と同じ骨格 */
   cheer: BuffStack;
   ward: BuffStack;
   /**
-   * 次ターンに取る行動。戦闘開始時とターン終了時にあらかじめ引いておき、
-   * 表示 (次ターン予告) と実際の行動を一致させる。大技・ダウン攻撃のターンは要素 1 つ、
-   * それ以外は雑魚 1 個・ボス 2 個 (通常行動を 2 回行うため)
+   * 次ターンに取る行動。戦闘開始時とターン終了時にあらかじめ引いておく (大技・ダウン攻撃の
+   * カウントダウン表示と実際の行動を一致させるため)。予告として画面に出すのは大技・ダウン攻撃の
+   * バッジだけで、通常行動 (attack/cheer/ward/dispel/none) の中身は見せない。
+   * 大技・ダウン攻撃・スタンのターンは要素 1 つ、それ以外は def.slots の枠数ぶん
+   * (雑魚 1・ボス 2 が基本形)
    */
   nextActions: EnemyAction[];
 }
@@ -492,6 +520,11 @@ export function useSkill(state: BattleState, slot: number, skillIndex: number, r
   } else if (e.kind === 'barrier') {
     state.barrier = true;
     addLog(state, 'good', `${f.name} の${s.def.name}。バリアを張った。`);
+  } else if (e.kind === 'dispel') {
+    // 味方が使う側なので、剥がす相手は敵の鼓舞・ward になる (敵が使う側の applyNormalAction は逆に味方を剥がす)
+    clearBuffStack(state.enemy.cheer);
+    clearBuffStack(state.enemy.ward);
+    addLog(state, 'good', `${f.name} の${s.def.name}。${state.enemy.def.name} の鼓舞と防御を剥がした。`);
   } else {
     // stun-self: 将来、味方スキルの代償として使う枠。今回は敵専用の仕組みだが型だけ用意しておく
     f.stunnedUntil = Math.max(f.stunnedUntil, state.turn + 1);
@@ -714,10 +747,19 @@ function applyNormalAction(state: BattleState, enemy: EnemyState, action: EnemyA
       addBuffStack(enemy.ward, 1);
       addLog(state, 'warn', `${enemy.def.name} が身を固めた。`);
       return;
+    case 'dispel':
+      // 敵が使う側なので、剥がす相手は味方の鼓舞・ward になる (useSkill の dispel とは逆側)
+      clearBuffStack(state.cheer);
+      clearBuffStack(state.ward);
+      addLog(state, 'warn', `${enemy.def.name} の剥がし。鼓舞とガードが消えた。`);
+      return;
+    case 'none':
+      // 何もしない。空振りのターンを作る手なので、ログには残さない
+      return;
     case 'big':
     case 'downstrike':
     case 'stun':
-      // pattern (通常行動の候補) には入れない値。大技・ダウン攻撃・スタンは
+      // 行動枠 (slots) には入れない値。大技・ダウン攻撃・スタンは
       // それぞれ専用のクールタイムから直接呼ばれる (doBig/doDownstrike/doStun)。
       // ここに来ることは無いが型のための保険
       return;
@@ -742,23 +784,48 @@ function doStun(state: BattleState, enemy: EnemyState, rng: Rng): void {
   if (names.length > 0) addLog(state, 'warn', `${enemy.def.name} のスタン。${names.join('・')} が気絶した。`);
 }
 
+/** 行動枠 1 つから重み付きで 1 つ選ぶ。重みの合計に対する一様乱数で引く (weightedFaction と同じ考え方) */
+function pickWeighted(rng: Rng, slot: ActionSlot): EnemyAction {
+  const total = slot.reduce((sum, c) => sum + c.weight, 0);
+  let roll = rng.next() * total;
+  for (const c of slot) {
+    roll -= c.weight;
+    if (roll < 0) return c.action;
+  }
+  return slot[slot.length - 1].action;
+}
+
+/**
+ * 通常行動 (大技・ダウン攻撃・スタン以外) を、枠ごとに独立して重み付き抽選する。
+ * 全ての枠が none (何もしない) を引くと、そのターン丸ごと空振りになってしまうので、
+ * 何か 1 つでも none 以外が出るまで引き直す (docs/plan.md「敵の行動と予告」)。
+ * 重みの置き方が極端でも無限ループにはしないよう、試行回数に上限を切る
+ */
+function rollActionSlots(enemy: EnemyState, rng: Rng): EnemyAction[] {
+  const slots = enemy.def.slots.length > 0 ? enemy.def.slots : ([[{ action: { kind: 'attack' }, weight: 1 }]] as ActionSlot[]);
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const actions = slots.map((slot) => pickWeighted(rng, slot));
+    if (actions.some((a) => a.kind !== 'none')) return actions;
+  }
+  // 20 回すべて空振りになるのは重みの置き方が極端なときだけで、実運用では起きない想定。
+  // それでも起きてしまったら、最低限の攻撃 1 回だけは通す
+  return [{ kind: 'attack' }];
+}
+
 /**
  * 次ターンに取る行動を引く。bigCountdown / downCountdown / stunCountdown は「あと 1」で
  * 次ターンに発動する (resolveEnemyTurn が毎ターン先頭で 1 減らしてから判定するのと同じしきい値)。
  * 優先順位は大技 > ダウン攻撃 > スタンで、重なったら 1 つだけ引く (resolveEnemyTurn と揃える)。
- * どの特殊行動のターンでもなければ、通常行動 (attack/cheer/ward) を雑魚 1 回・ボス 2 回ぶん引く。
- * これを実行の 1 ターン前に済ませておくことで、予告表示と実際の行動を一致させる
- * (乱数の消費順は変わるが、ルールの結果は変えない)
+ * どの特殊行動のターンでもなければ、行動枠 (def.slots) ぶんの通常行動を枠ごとに引く。
+ * これを実行の 1 ターン前に済ませておくことで、大技・ダウン攻撃の予告 (カウントダウン) と
+ * 実際の行動を一致させる (乱数の消費順は変わるが、ルールの結果は変えない)。
+ * 通常行動そのものは画面に予告しない (docs/plan.md「敵の行動と予告」)
  */
 function rollNextActions(enemy: EnemyState, rng: Rng): EnemyAction[] {
   if (enemy.bigCountdown <= 1) return [{ kind: 'big' }];
   if (enemy.downCountdown !== null && enemy.downCountdown <= 1) return [{ kind: 'downstrike' }];
   if (enemy.stunCountdown !== null && enemy.stunCountdown <= 1) return [{ kind: 'stun', ...enemy.def.stunRange }];
-  const times = enemy.def.isBoss ? 2 : 1;
-  const pattern = enemy.def.pattern.length > 0 ? enemy.def.pattern : ([{ kind: 'attack' }] as EnemyAction[]);
-  const actions: EnemyAction[] = [];
-  for (let i = 0; i < times; i++) actions.push(rng.pick(pattern));
-  return actions;
+  return rollActionSlots(enemy, rng);
 }
 
 /**

@@ -410,14 +410,10 @@ function renderStageBody(vm: ViewModel): void {
     return;
   }
 
-  // 戦闘: 敵が次のターンに何をするかを予告する。探索のイベント表示と同じ見た目にして
-  // 画面の語彙を揃える (見た目が揃うと、戦闘中も探索と同じ場所を見ればいいと分かる)。
-  // ボスは大技・ダウン攻撃のターン以外は 2 回行動するので、ラベルが 2 つ並ぶ
-  if (s.kind === 'battle') {
-    if (!s.enemy.alive || s.nextActionLabels.length === 0) return;
-    stageBody.append(eventBox('次ターン', s.nextActionLabels.join(' / ')));
-    return;
-  }
+  // 戦闘: 通常行動 (攻撃・鼓舞・防御など) は毎ターン中身が見えると抽選の揺れが意味を失うので
+  // 予告しない (docs/plan.md「敵の行動と予告」)。大技・ダウン攻撃の予告は状態アイコン側の
+  // バッジ (bigLabel/downLabel) で出しているので、ここでは何も出さない
+  if (s.kind === 'battle') return;
 
   if (s.kind === 'result') {
     const title = document.createElement('p');
@@ -506,17 +502,20 @@ function renderIcons(vm: ViewModel): void {
   if (s.combo > 0) iconsAlly.append(badge(`コンボ${s.combo}`, 'warn'));
   if (s.fleeIn !== null) iconsAlly.append(badge(`離脱 あと${s.fleeIn}`, 'warn'));
 
-  // ステージ右: 敵の状態を縦列で。耐性・大技とダウン攻撃の予告・ボスの印。
+  // ステージ右: 敵の状態を縦列で。耐性・大技とダウン攻撃の予告・鼓舞とガード・ボスの印。
   // 予告は「大N」「ダN」のような略記をやめ、実際の技名まで書き下す (game.ts が組み立てた
-  // bigLabel/downLabel をそのまま出すだけで、main.ts では文字列を組み立てない)
+  // bigLabel/downLabel をそのまま出すだけで、main.ts では文字列を組み立てない)。
+  // スタンは予告しない (docs/plan.md「敵の行動と予告」) ので、ここにはバッジを出さない。
+  // 鼓舞・ガードは味方側 (iconsAlly) と同じ形にして、今どれだけ固まっているかを見せる
+  // (計算には入っているのに画面に出ておらず、効果が無いように見えていた不具合の修正)
   const e = s.enemy;
   if (e.alive) {
     if (e.resist) iconsEnemy.append(badge(e.resist === '物理' ? '物理耐' : '魔法耐'));
     iconsEnemy.append(badge(e.bigLabel, e.bigCountdown === 1 ? 'warn' : ''));
     // ダウン攻撃の予告は大技と別色にする (down クラス)
     if (e.downLabel) iconsEnemy.append(badge(e.downLabel, 'down'));
-    // スタンの予告はさらに別色にする (stun クラス)。クールタイム制になったので予告に載せられる
-    if (e.stunLabel) iconsEnemy.append(badge(e.stunLabel, 'stun'));
+    if (e.cheerStacks > 0) iconsEnemy.append(badge(`鼓舞 ${dotsOf(e.cheerStacks, s.cheerMax)} ${e.cheerTurns}`, 'warn'));
+    if (e.wardStacks > 0) iconsEnemy.append(badge(`ガード ${dotsOf(e.wardStacks, s.wardMax)} ${e.wardTurns}`, 'warn'));
     if (e.isBoss) iconsEnemy.append(badge('ボス', 'boss'));
   }
 }

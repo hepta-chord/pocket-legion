@@ -191,14 +191,17 @@ export interface BattleView {
     bigLabel: string;
     /** ダウン攻撃の予告バッジに出す書き下しラベル (例: 「ダウン攻撃 あと2」)。持たない敵は null */
     downLabel: string | null;
-    /** スタンの予告バッジに出す書き下しラベル (例: 「スタン あと2」)。持たない敵は null */
-    stunLabel: string | null;
+    /** 敵の鼓舞スタック (自己強化)。0 なら乗っていない。味方の cheerStacks と同じ形で状態アイコンに出す */
+    cheerStacks: number;
+    /** 敵の鼓舞の残りターン。cheerStacks が 0 のときは意味を持たない */
+    cheerTurns: number;
+    /** 敵の ward (自己防御) スタック。0 なら乗っていない */
+    wardStacks: number;
+    /** 敵の ward の残りターン。wardStacks が 0 のときは意味を持たない */
+    wardTurns: number;
     alive: boolean;
     isBoss: boolean;
   };
-  /** 敵の次ターンの行動ラベル (1〜2 個)。ボスは大技・ダウン攻撃のターン以外は 2 回行動するので
-   * 2 つ並ぶ。表示専用で、行動そのものは battle.ts 側で決め、ここでは文字列化した結果だけを持つ */
-  nextActionLabels: string[];
   /** 前衛 6 枠。null は空きスロット */
   slots: ({
     name: string;

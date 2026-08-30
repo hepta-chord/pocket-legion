@@ -5,9 +5,17 @@
 // 浅い深度では瞬殺できる。深くなるほど HP が二次で伸びて、
 // 「まだ farm できる深さ」と「削られ始める深さ」の縁が生まれる。
 
-import type { EnemyAction, EnemyDef } from '../battle';
+import type { ActionSlot, EnemyDef } from '../battle';
 import type { Rng } from '../rng';
 import type { Element } from './skills';
+
+/** 雑魚の行動枠。1 枠だけで、攻撃 9・何もしない 1 を基準にする (docs/plan.md「敵の行動と予告」) */
+const FOE_SLOTS: ActionSlot[] = [
+  [
+    { action: { kind: 'attack' }, weight: 9 },
+    { action: { kind: 'none' }, weight: 1 },
+  ],
+];
 
 /**
  * ボスのスタンが巻き込む人数の幅。区画 (浅層/中層/深層) で変える。
@@ -31,8 +39,8 @@ const NO_STUN_RANGE = { min: 1, max: 1 };
  * ダウン攻撃・スタンは雑魚の一部だけが持つ (docs/plan.md「敵の行動と予告」)。
  * 2 割程度にダウン攻撃、別の 2 割程度にスタンを持たせ、両方持つ個体は作らない
  * (どちらも持たない大半は、大技以外はただ殴るだけの雑魚になる)。
- * スタンは大技・ダウン攻撃と同じクールタイム制 (stunEvery) にしてあり、行動パターンの
- * 抽選には乗らない (乗せると、雑魚は 2 択のパターンで毎ターン 5 割の頻度になってしまうため)
+ * スタンは大技・ダウン攻撃と同じクールタイム制 (stunEvery) にしてあり、行動枠の
+ * 抽選には乗らず、予告もしない (大技・ダウン攻撃と違って、来ると分かっている必要はない)
  */
 export function makeFoe(depth: number, rng: Rng, elite = false): EnemyDef {
   const groupSize = rng.int(1, Math.min(3, 1 + Math.floor(depth / 5)));
@@ -65,7 +73,7 @@ export function makeFoe(depth: number, rng: Rng, elite = false): EnemyDef {
     // 雑魚のスタンは必ず 1 人だけにする (複数はボスの特権)
     stunEvery: hasStun ? rng.int(4, 6) : null,
     stunRange: NO_STUN_RANGE,
-    pattern: [{ kind: 'attack' }],
+    slots: FOE_SLOTS,
   };
 }
 
@@ -104,6 +112,30 @@ function bossStunEvery(sectorId: number): number {
 }
 
 /**
+ * ボスの行動枠 (docs/plan.md「敵の行動と予告」)。2 枠持つ。
+ * 枠 1 はほぼ攻撃 (9:1) で、ここでほぼ毎ターン殴ってくる。
+ * 枠 2 で自己強化 (鼓舞・防御) を織り交ぜる (浅層は 5:5:1:2)。均等な 1/3 ずつだと
+ * 自己強化ばかりで殴ってこなくなるため、枠を分けて「ほぼ殴る」を土台に据えてある。
+ * 深いほど枠 2 の攻撃寄りの重みを増やす、という素直な差だけを付ける
+ * (重みそのものの調整は行わない。docs/batch-next.md 6 節)
+ */
+function bossSlots(sectorId: number): ActionSlot[] {
+  const slot1: ActionSlot = [
+    { action: { kind: 'attack' }, weight: 9 },
+    { action: { kind: 'none' }, weight: 1 },
+  ];
+  const selfBuffWeight = sectorId <= 1 ? 5 : sectorId === 2 ? 4 : 3;
+  const attackWeight = sectorId <= 1 ? 1 : sectorId === 2 ? 3 : 5;
+  const slot2: ActionSlot = [
+    { action: { kind: 'cheer' }, weight: selfBuffWeight },
+    { action: { kind: 'ward' }, weight: selfBuffWeight },
+    { action: { kind: 'attack' }, weight: attackWeight },
+    { action: { kind: 'none' }, weight: 2 },
+  ];
+  return [slot1, slot2];
+}
+
+/**
  * 区画ごとのボスを 1 体作る。
  *
  * 50〜100 ターンの消耗戦にするため、通常攻撃は深度なりの雑魚よりずっと軽い。
@@ -113,14 +145,13 @@ function bossStunEvery(sectorId: number): number {
  * ボスが怖いのは殴られ続けるからではなく、予告に毎回答えを出し続けるからにする。
  *
  * ボスは全員が大技・ダウン攻撃・スタン・自己鼓舞・自己防御を持つ。スタンも大技・ダウン攻撃と
- * 同じクールタイム制 (stunEvery) にしてあり、行動パターンの抽選には乗らない
- * (乗せると、2 回行動と合わせて毎ターン 4 割前後スタンが飛んでしまうため)。
- * どちらの特殊行動のターンでもなければ通常行動 (attack/cheer/ward) を 2 回行う。
+ * 同じクールタイム制 (stunEvery) にしてあり、行動枠の抽選には乗らない
+ * (乗せると、2 枠と合わせて毎ターン頻繁にスタンが飛んでしまう)。予告もしない。
+ * どちらの特殊行動のターンでもなければ、bossSlots (2 枠) を引く
  */
 export function makeBoss(sectorId: number, rng: Rng): EnemyDef {
   const spec = BOSSES[Math.min(sectorId, BOSSES.length) - 1] ?? BOSSES[BOSSES.length - 1];
   const resist: Element = rng.chance(0.5) ? 'physical' : 'magic';
-  const pattern: EnemyAction[] = [{ kind: 'attack' }, { kind: 'cheer' }, { kind: 'ward' }];
   return {
     id: `boss-${sectorId}`,
     name: spec.name,
@@ -136,6 +167,6 @@ export function makeBoss(sectorId: number, rng: Rng): EnemyDef {
     downEvery: bossDownEvery(sectorId),
     stunEvery: bossStunEvery(sectorId),
     stunRange: bossStunRange(sectorId),
-    pattern,
+    slots: bossSlots(sectorId),
   };
 }
