@@ -20,14 +20,26 @@ export class TextRenderer implements Renderer {
   /** 直近の draw() 呼び出しの引数。ResizeObserver から測り直したあと同じ絵で描き直すために持つ */
   private lastVm: ViewModel | null = null;
 
+  /** #corridor の親 (#stage)。この要素の実寸を基準に、文字グリッドと同じ縦横比を
+   * 保ったまま収まる最大サイズを計算する */
+  private readonly stage: HTMLElement;
+
   constructor(private canvas: HTMLCanvasElement) {
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('2d コンテキストを取得できません');
     this.ctx = ctx;
+    const stage = canvas.parentElement;
+    if (!stage) throw new Error('#corridor の親要素が見つかりません');
+    this.stage = stage;
 
-    // canvas 自体の縦横比を文字グリッドと同じ比率に固定する (style.css 側は #corridor に
-    // aspect-ratio を書いていないので、ここで唯一の値渡し元として与える)。これで
-    // ステージの高さが場面ごとに変わっても canvas の形自体は変わらず、大きさだけが変わる
+    // canvas 自体の縦横比を文字グリッドと同じ比率に固定する。style.css 側の
+    // max-width/max-height:100% と合わせて、CSS だけで見た初期状態やスクリプト無効時にも
+    // 崩れた形にはならないようにする (実際の px サイズは resize() が JS 側で確定させる。
+    // canvas は width/height 属性 (描画解像度) を持つ replaced element で、一度でも小さい
+    // 値で初期化されるとブラウザがその値を「もとの大きさ」として扱ってしまい、
+    // aspect-ratio や max-width/max-height を指定していてもそこから先は大きくなれなくなる
+    // (Chromium で実測して確認済み)。そのため実際のレイアウトは canvas 自身の
+    // getBoundingClientRect() ではなく、常に親 (#stage) の実寸から計算する)
     canvas.style.aspectRatio = `${CORRIDOR_SIZE.width * CHAR_ASPECT} / ${CORRIDOR_SIZE.height}`;
 
     this.resize();
@@ -36,31 +48,43 @@ export class TextRenderer implements Renderer {
     // まだ確定していない、など)、そのあと別の描画契機で再測定されると実寸とズレて
     // 絵が変わって見えてしまう (通路の絵が途中で変わるバグの原因)。
     // 測り直しの契機を時間や描画回数に頼らず、表示枠そのものの変化を監視して
-    // 変わったらここで測り直してから直前の絵を描き直す
+    // 変わったらここで測り直してから直前の絵を描き直す。観測対象は canvas 自身ではなく
+    // #stage (親) にする。canvas 自身のサイズはこちらが style.width/height で決めるので、
+    // 監視すべきは「収まる先の枠が変わったかどうか」であって canvas 自身の結果ではない
     const observer = new ResizeObserver(() => {
       this.resize();
       if (this.lastVm) this.draw(this.lastVm);
     });
-    observer.observe(canvas);
+    observer.observe(this.stage);
   }
 
   resize(): void {
     const dpr = window.devicePixelRatio || 1;
-    const rect = this.canvas.getBoundingClientRect();
+    // border を含まない内寸 (#stage は border:1px + overflow:hidden) を使う
+    const availW = this.stage.clientWidth;
+    const availH = this.stage.clientHeight;
     // 表示サイズが 0 のまま描くと以降ずっと空になるので、測り直した値をそのつど反映する。
     // ただし前回と同じ大きさなら測り直しても結果は変わらないので、canvas の再確保 (中身が
     // 消える) を避けるためにここで打ち切る
-    if (rect.width === this.lastRect.w && rect.height === this.lastRect.h) return;
-    this.lastRect = { w: rect.width, h: rect.height };
+    if (availW === this.lastRect.w && availH === this.lastRect.h) return;
+    this.lastRect = { w: availW, h: availH };
 
-    this.canvas.width = Math.max(1, Math.round(rect.width * dpr));
-    this.canvas.height = Math.max(1, Math.round(rect.height * dpr));
+    // 文字セルは固定の縦横比 (CHAR_ASPECT) で保ち、枠の縦横比に合わせて引き伸ばさない。
+    // 枠の幅・高さのどちらに合わせても収まりきる方のスケールを選ぶ (contain と同じ考え方)。
+    // canvas の CSS サイズをここで確定させてしまうので、中央寄せは #stage 側の
+    // display:flex + align-items/justify-content:center に任せられる (余白を自分で
+    // 振る必要はない)
+    const scale = Math.min(availW / (CORRIDOR_SIZE.width * CHAR_ASPECT), availH / CORRIDOR_SIZE.height);
+    const cssW = CORRIDOR_SIZE.width * CHAR_ASPECT * scale;
+    const cssH = CORRIDOR_SIZE.height * scale;
+    this.canvas.style.width = `${cssW}px`;
+    this.canvas.style.height = `${cssH}px`;
+
+    this.canvas.width = Math.max(1, Math.round(cssW * dpr));
+    this.canvas.height = Math.max(1, Math.round(cssH * dpr));
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    // canvas 自体の CSS 縦横比 (aspect-ratio) が CORRIDOR_SIZE と同じ比率に固定されているので、
-    // 幅から計算しても高さから計算しても同じ大きさの文字セルになる。余白を振る必要もない
-    // (contain のための min() 計算・offset はここでは不要になった)
-    this.cell = { w: rect.width / CORRIDOR_SIZE.width, h: rect.height / CORRIDOR_SIZE.height };
+    this.cell = { w: cssW / CORRIDOR_SIZE.width, h: cssH / CORRIDOR_SIZE.height };
   }
 
   draw(vm: ViewModel): void {
