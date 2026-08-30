@@ -159,6 +159,8 @@ export interface CharacterEntry {
   growth: number;
   /** 成長カーブの型 (マスクパラメータ)。ViewModel には出さない */
   curve: Curve;
+  /** カーブを正規化する基準レベル。上限の無いキャラだけが持つ (growth.ts を参照) */
+  curveRef?: number;
 }
 
 /** 現在レベルでの実効攻撃力 */
@@ -212,6 +214,9 @@ export const CHARACTERS: readonly CharacterEntry[] = [
     maxLevel: 999,
     growth: 1.5,
     curve: 'late',
+    // 上限が無いぶん、カーブは 30 レベルを 1 周ぶんとして数える。
+    // maxLevel を基準にすると進捗がいつまでも 0 に近く、まったく育たない
+    curveRef: 30,
   },
   {
     id: 'mate',
