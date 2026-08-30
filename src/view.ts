@@ -7,12 +7,34 @@ export interface LogLineView {
   text: string;
 }
 
+/** 酒場・所持一覧で共有する、キャラ 1 人ぶんの表示情報 */
+interface CharacterCardView {
+  id: string;
+  name: string;
+  faction: string;
+  /** アクションスキルとパッシブの名前を並べたもの */
+  skills: string[];
+}
+
 /** 拠点の画面 */
 export interface TownView {
   kind: 'town';
   gold: number;
+  potions: number;
   /** 出撃できる区画。解放済みのものだけが並ぶ */
   sectors: { id: number; name: string; depth: number; unlocked: boolean }[];
+  /** 酒場の品揃え (コモン 3 人まで)。affordable は所持金で雇えるか */
+  tavern: (CharacterCardView & { price: number; affordable: boolean })[];
+  /** 所持キャラの一覧。編成の入れ替え UI はまだ無い */
+  roster: (CharacterCardView & { rarity: 'common' | 'rare' })[];
+}
+
+/** ダンジョン画面のイベント。alt があれば二択になる (ボス前の分岐イベント) */
+interface DungeonEventView {
+  title: string;
+  body: string;
+  action: string;
+  alt?: string;
 }
 
 /** ダンジョンの画面 */
@@ -26,7 +48,11 @@ export interface DungeonView {
   /** 通路の奥行き。3D ビューの描き分けに使う */
   corridor: number;
   /** 未解決のイベント。null なら「進む」だけができる */
-  event: { title: string; body: string; action: string } | null;
+  event: DungeonEventView | null;
+  frontCount: number;
+  reserveCount: number;
+  downedCount: number;
+  potions: number;
 }
 
 /**
@@ -45,6 +71,9 @@ export interface BattleView {
   /** バリアが張られているか。あれば次の敵の攻撃を 1 回無効化する */
   barrier: boolean;
   turn: number;
+  /** 同一ターン内で命中した攻撃の回数。0 は目立たせない表示にする */
+  combo: number;
+  potions: number;
   /** 敵は常に 1 体。対象選択を無くすための仕様なので単数で持つ */
   enemy: {
     name: string;

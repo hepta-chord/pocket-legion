@@ -10,33 +10,54 @@ import {
   GUARD_MAX,
   MANA_CAP,
   refillFront,
+  resetSortieProgress,
   startBattle,
   swapMembers,
   useGuard,
+  usePotion,
   useSkill,
   whyCannotUse,
   type BattleState,
   type EnemyDef,
   type SwapMove,
 } from './battle';
+import { CHARACTERS, skillLabels, type CharacterEntry } from './data/characters';
 import { FACTION_NAMES } from './data/factions';
-import type { EventKind } from './data/events';
 import { makeBoss, makeFoe } from './data/enemies';
 import { SECTORS, sectorById } from './data/sectors';
 import { hashSeed, Rng } from './rng';
-import { advance, damage, heal, isWiped, sectorOf, startRun, type RunState } from './run';
-import type { BattleView, LogLineView, ViewModel } from './view';
+import {
+  addToDeck,
+  advance,
+  damage,
+  heal,
+  isWiped,
+  reviveDowned,
+  sectorOf,
+  startRun,
+  type RunState,
+} from './run';
+import type { BattleView, DungeonView, LogLineView, TownView, ViewModel } from './view';
 
-// 戦闘を 1 対 1 に改めて BattleState.enemies を enemy (単数) にし、battleTarget も
-// 無くなって古いセーブと形が合わなくなったので、区切りを上げて捨てる
-export const SAVE_VERSION = 3;
+// 出撃の編成フロー (roster / tavern / potions / downed) を足して GameState の形が
+// 変わったので、古いセーブと噛み合わなくなる。区切りを上げて捨てる
+export const SAVE_VERSION = 4;
+
+/** 回復薬の所持上限 */
+const POTION_MAX = 3;
+/** 出撃開始時の所持金。コモン 2 人を雇って 60 残る水準 */
+const START_GOLD = 300;
 
 export type Action =
   | { type: 'sortie'; sectorId: number }
   | { type: 'advance' }
   | { type: 'resolve' }
+  /** ボス前の分岐イベントだけが持つ、もう一方の選択肢 (レアの加入) */
+  | { type: 'resolve-alt' }
   | { type: 'retreat' }
   | { type: 'dismiss' }
+  | { type: 'hire'; id: string }
+  | { type: 'potion' }
   | { type: 'battle-skill'; slot: number; skill: number }
   | { type: 'battle-guard' }
   | { type: 'battle-swap'; moves: SwapMove[] }
@@ -50,6 +71,12 @@ export interface GameState {
   seed: string;
   rngState: number;
   gold: number;
+  /** 回復薬の所持数。上限 POTION_MAX */
+  potions: number;
+  /** 所持キャラの id 列。hero と mate は常に含む */
+  roster: string[];
+  /** 今の酒場の品揃え (コモンの id、最大 3 人) */
+  tavern: string[];
   /** 解放済みの区画。ボスを倒すと 1 つ増える */
   unlocked: number;
   run: RunState | null;
@@ -63,12 +90,32 @@ export interface GameState {
 
 const LOG_LIMIT = 8;
 
+/** 所持していないコモンから rng で最大 3 人を引く (足りなければあるだけ) */
+function rerollTavern(state: GameState, rng: Rng): void {
+  const remaining = CHARACTERS.filter((c) => c.rarity === 'common' && !state.roster.includes(c.id));
+  const picked: string[] = [];
+  for (let i = 0; i < 3 && remaining.length > 0; i++) {
+    const idx = rng.int(0, remaining.length - 1);
+    picked.push(remaining[idx].id);
+    remaining.splice(idx, 1);
+  }
+  state.tavern = picked;
+}
+
+function hasUnownedRare(roster: readonly string[]): boolean {
+  return CHARACTERS.some((c) => c.rarity === 'rare' && !roster.includes(c.id));
+}
+
 export function newGame(seed: string): GameState {
-  return {
+  const rng = new Rng(hashSeed(seed));
+  const state: GameState = {
     version: SAVE_VERSION,
     seed,
-    rngState: hashSeed(seed),
-    gold: 0,
+    rngState: rng.state,
+    gold: START_GOLD,
+    potions: 0,
+    roster: ['hero', 'mate'],
+    tavern: [],
     unlocked: 1,
     run: null,
     battle: null,
@@ -76,6 +123,9 @@ export function newGame(seed: string): GameState {
     result: null,
     log: [{ kind: 'info', text: '迷宮都市に着いた。' }],
   };
+  rerollTavern(state, rng);
+  state.rngState = rng.state;
+  return state;
 }
 
 export function addLog(state: GameState, kind: LogLineView['kind'], text: string): void {
@@ -96,43 +146,85 @@ function commitRng(state: GameState, rng: Rng): void {
 // イベントの解決
 //
 // 戦闘 (battle / elite / ボス) は startBattle で battle.ts に委ねる。
-// ここでその場決着させるのは treasure / spring / trap / recruit の 4 つだけ。
+// treasure / trap はその場でパーティ HP と金だけを動かす軽いイベントなので resolveEvent に
+// まとめる。spring / recruit / boss-alt は Party の構成そのもの (ダウン復帰・加入) を
+// 動かすので、個別の関数にしている。
 
 interface Outcome {
   hp: number;
   gold: number;
+  /** 宝イベントでまれに出る回復薬 (0 か 1) */
+  potion: number;
   kind: LogLineView['kind'];
   text: string;
 }
 
-function resolveEvent(run: RunState, kind: Exclude<EventKind, 'battle' | 'elite'>, rng: Rng): Outcome {
-  const scale = 1 + run.depth / 10;
+function resolveEvent(run: RunState, kind: 'treasure' | 'trap', rng: Rng): Outcome {
+  const roll = () => 0.8 + 0.4 * rng.next();
   switch (kind) {
     case 'treasure': {
-      const gold = Math.round(rng.int(10, 20) * scale);
-      return { hp: 0, gold, kind: 'good', text: `箱には ${gold} G が入っていた。` };
-    }
-    case 'spring': {
-      const back = Math.round(run.maxHp / 3);
-      return { hp: back, gold: 0, kind: 'good', text: `泉で立て直した。${back} 回復した。` };
+      const gold = Math.round((80 + run.depth * 20) * roll());
+      const potion = rng.chance(0.3) ? 1 : 0;
+      const note = potion ? ' 底に回復薬も 1 個沈んでいた。' : '';
+      return { hp: 0, gold, potion, kind: 'good', text: `箱には ${gold} G が入っていた。${note}` };
     }
     case 'trap': {
-      const hurt = Math.round(rng.int(4, 9) * scale);
-      return { hp: -hurt, gold: 0, kind: 'warn', text: `罠が弾けた。${hurt} 受けた。` };
+      const hurt = Math.round((40 + run.depth * 9) * roll());
+      return { hp: -hurt, gold: 0, potion: 0, kind: 'warn', text: `罠が弾けた。${hurt} 受けた。` };
     }
-    case 'recruit':
-      // 加入はマイルストーン 4 で roster.ts が引き受ける
-      return { hp: 0, gold: 0, kind: 'good', text: '生存者は都市まで付いてくると言った。' };
   }
 }
 
-/** 出撃を終える。勝てば戦利品を持ち帰り、負ければその出撃の稼ぎを失う */
-function finishRun(state: GameState, won: boolean): void {
+/** 泉。HP を最大値の半分回復し、sortieBump/spent をリセットし、ダウンした roster を全員復帰させる */
+function resolveSpring(run: RunState): string {
+  const back = Math.round(run.maxHp / 2);
+  heal(run, back);
+  const revived = reviveDowned(run);
+  resetSortieProgress(run.party);
+  return revived > 0 ? `泉で立て直した。${back} 回復した。${revived} 人が戦線に復帰した。` : `泉で立て直した。${back} 回復した。`;
+}
+
+/** ボス前の分岐イベント「回復する」。泉と同じ効果に加え HP は全回復する */
+function resolveBossAltHeal(run: RunState): string {
+  const revived = reviveDowned(run);
+  resetSortieProgress(run.party);
+  run.hp = run.maxHp;
+  return revived > 0 ? `泉で全快した。${revived} 人が戦線に復帰した。` : '泉で全快した。';
+}
+
+/** ボス前の分岐イベント「レアを迎える」。未所持のレアから 1 人選び、roster とデッキに入れる */
+function resolveBossAltRare(state: GameState, run: RunState, rng: Rng): string {
+  const candidates = CHARACTERS.filter((c) => c.rarity === 'rare' && !state.roster.includes(c.id));
+  if (candidates.length === 0) return resolveBossAltHeal(run);
+  const picked = rng.pick(candidates);
+  state.roster.push(picked.id);
+  addToDeck(run, picked);
+  return `${picked.name} が仲間になった。`;
+}
+
+/** ダンジョン内の加入イベント。所持していないコモンから 1 人、無ければ金に化ける */
+function resolveRecruit(state: GameState, run: RunState, rng: Rng): string {
+  const candidates = CHARACTERS.filter((c) => c.rarity === 'common' && !state.roster.includes(c.id));
+  if (candidates.length === 0) {
+    const gold = Math.round(100 * (1 + run.depth / 10));
+    run.gold += gold;
+    return `見知った顔ばかりだった。かわりに ${gold} G を渡された。`;
+  }
+  const picked = rng.pick(candidates);
+  state.roster.push(picked.id);
+  addToDeck(run, picked);
+  return `${picked.name} が仲間になった。`;
+}
+
+/** 出撃を終える。勝てば戦利品を持ち帰り、負ければその出撃の稼ぎと回復薬を失う */
+function finishRun(state: GameState, won: boolean, rng: Rng): void {
   const run = state.run;
   if (!run) return;
   if (won) state.gold += run.gold;
+  else state.potions = 0;
   state.result = { won, depth: run.depth, gold: won ? run.gold : 0 };
   state.run = null;
+  rerollTavern(state, rng);
 }
 
 // ---------------------------------------------------------------------------
@@ -142,6 +234,13 @@ function enterBattle(state: GameState, run: RunState, kind: BattleKind, enemyDef
   state.battle = startBattle(run.party, run.hp, run.maxHp, enemyDef);
   state.battleKind = kind;
   addLog(state, 'warn', line);
+}
+
+/** battle.ts が積んだ (ダウンで Party から外れた) Fighter を run.downed へ回収する */
+function drainDowned(run: RunState, b: BattleState): void {
+  if (b.left.length === 0) return;
+  run.downed.push(...b.left);
+  b.left.length = 0;
 }
 
 /** 戦闘の決着を GameState 側へ反映する。victory / wipe / annihilated のときだけ動く */
@@ -159,10 +258,10 @@ function settleBattle(state: GameState, run: RunState, rng: Rng): void {
     const kind = state.battleKind;
     const gold =
       kind === 'boss'
-        ? Math.round(rng.int(40, 70) * scale)
+        ? Math.round(rng.int(400, 700) * scale)
         : kind === 'elite'
-          ? Math.round(rng.int(15, 25) * scale)
-          : Math.round(rng.int(4, 9) * scale);
+          ? Math.round(rng.int(150, 250) * scale)
+          : Math.round(rng.int(40, 90) * scale);
     run.gold += gold;
     addLog(state, 'good', `${gold} G を得た。`);
     refillFront(run.party);
@@ -175,7 +274,7 @@ function settleBattle(state: GameState, run: RunState, rng: Rng): void {
         state.unlocked += 1;
         addLog(state, 'good', `${sectorById(state.unlocked).name}への道が開いた。`);
       }
-      finishRun(state, true);
+      finishRun(state, true, rng);
     }
     return;
   }
@@ -184,7 +283,7 @@ function settleBattle(state: GameState, run: RunState, rng: Rng): void {
   addLog(state, 'bad', '出撃は終わった。稼ぎは通路に散らばった。');
   state.battle = null;
   state.battleKind = null;
-  finishRun(state, false);
+  finishRun(state, false, rng);
 }
 
 // ---------------------------------------------------------------------------
@@ -196,7 +295,7 @@ export function step(state: GameState, action: Action): void {
     case 'sortie': {
       if (state.run) break;
       if (action.sectorId > state.unlocked) break;
-      state.run = startRun(action.sectorId);
+      state.run = startRun(action.sectorId, state.roster);
       state.result = null;
       addLog(state, 'info', `${sectorById(action.sectorId).name}へ潜った。`);
       break;
@@ -220,22 +319,55 @@ export function step(state: GameState, action: Action): void {
       }
       if (!run.pending) break;
       const kind = run.pending.kind;
-      if (kind === 'battle' || kind === 'elite') {
-        run.pending = null;
-        const foe = makeFoe(run.depth, rng, kind === 'elite');
-        enterBattle(state, run, kind, foe, `${foe.name} が立ちはだかる。`);
-        break;
+      switch (kind) {
+        case 'battle':
+        case 'elite': {
+          run.pending = null;
+          const foe = makeFoe(run.depth, rng, kind === 'elite');
+          enterBattle(state, run, kind, foe, `${foe.name} が立ちはだかる。`);
+          break;
+        }
+        case 'boss-alt': {
+          run.pending = null;
+          addLog(state, 'good', resolveBossAltHeal(run));
+          break;
+        }
+        case 'recruit': {
+          run.pending = null;
+          addLog(state, 'good', resolveRecruit(state, run, rng));
+          break;
+        }
+        case 'spring': {
+          run.pending = null;
+          addLog(state, 'good', resolveSpring(run));
+          break;
+        }
+        case 'treasure':
+        case 'trap': {
+          const out = resolveEvent(run, kind, rng);
+          run.pending = null;
+          if (out.hp < 0) damage(run, -out.hp);
+          else if (out.hp > 0) heal(run, out.hp);
+          run.gold += out.gold;
+          if (out.potion > 0) state.potions = Math.min(POTION_MAX, state.potions + out.potion);
+          addLog(state, out.kind, out.text);
+          if (isWiped(run)) {
+            addLog(state, 'bad', '部隊は全滅した。稼ぎは通路に散らばった。');
+            finishRun(state, false, rng);
+          }
+          break;
+        }
       }
-      const out = resolveEvent(run, kind, rng);
+      break;
+    }
+
+    case 'resolve-alt': {
+      const run = state.run;
+      if (!run || state.battle) break;
+      if (!run.pending || run.pending.kind !== 'boss-alt') break;
+      if (!hasUnownedRare(state.roster)) break;
       run.pending = null;
-      if (out.hp < 0) damage(run, -out.hp);
-      else if (out.hp > 0) heal(run, out.hp);
-      run.gold += out.gold;
-      addLog(state, out.kind, out.text);
-      if (isWiped(run)) {
-        addLog(state, 'bad', '部隊は全滅した。稼ぎは通路に散らばった。');
-        finishRun(state, false);
-      }
+      addLog(state, 'good', resolveBossAltRare(state, run, rng));
       break;
     }
 
@@ -243,7 +375,7 @@ export function step(state: GameState, action: Action): void {
       const run = state.run;
       if (!run || state.battle) break;
       addLog(state, 'info', '来た道を戻った。');
-      finishRun(state, true);
+      finishRun(state, true, rng);
       break;
     }
 
@@ -251,11 +383,44 @@ export function step(state: GameState, action: Action): void {
       state.result = null;
       break;
 
+    case 'hire': {
+      if (state.run || state.battle) break;
+      if (!state.tavern.includes(action.id)) break;
+      if (state.roster.includes(action.id)) break;
+      const entry = CHARACTERS.find((c) => c.id === action.id);
+      if (!entry) break;
+      if (state.gold < entry.price) break;
+      state.gold -= entry.price;
+      state.roster.push(entry.id);
+      state.tavern = state.tavern.filter((id) => id !== entry.id);
+      addLog(state, 'good', `${entry.name} を雇った。`);
+      break;
+    }
+
+    case 'potion': {
+      if (state.potions <= 0) break;
+      const run = state.run;
+      if (!run) break;
+      const b = state.battle;
+      if (b && b.outcome === 'ongoing') {
+        const healed = usePotion(b);
+        state.potions -= 1;
+        addLog(state, 'good', `回復薬を使った。${healed} 回復した。`);
+      } else if (!b) {
+        const back = Math.round(run.maxHp / 2);
+        heal(run, back);
+        state.potions -= 1;
+        addLog(state, 'good', `回復薬を使った。${back} 回復した。`);
+      }
+      break;
+    }
+
     case 'battle-skill': {
       const run = state.run;
       const b = state.battle;
       if (!run || !b) break;
       useSkill(b, action.slot, action.skill, rng);
+      drainDowned(run, b);
       settleBattle(state, run, rng);
       break;
     }
@@ -272,6 +437,7 @@ export function step(state: GameState, action: Action): void {
       const b = state.battle;
       if (!run || !b) break;
       swapMembers(b, action.moves);
+      drainDowned(run, b);
       settleBattle(state, run, rng);
       break;
     }
@@ -281,6 +447,7 @@ export function step(state: GameState, action: Action): void {
       const b = state.battle;
       if (!run || !b) break;
       endTurn(b, rng);
+      drainDowned(run, b);
       settleBattle(state, run, rng);
       break;
     }
@@ -302,7 +469,7 @@ function skillNote(oncePerSortie: boolean | undefined, selfDown: boolean | undef
   return tags.length > 0 ? tags.join('・') : null;
 }
 
-function toBattleView(b: BattleState): BattleView {
+function toBattleView(b: BattleState, potions: number): BattleView {
   const e = b.enemy;
   return {
     kind: 'battle',
@@ -314,6 +481,8 @@ function toBattleView(b: BattleState): BattleView {
     guardMax: GUARD_MAX,
     barrier: b.barrier,
     turn: b.turn,
+    combo: b.combo,
+    potions,
     enemy: {
       name: e.def.name,
       groupSize: e.def.groupSize,
@@ -344,6 +513,65 @@ function toBattleView(b: BattleState): BattleView {
   };
 }
 
+function toDungeonView(run: RunState, potions: number, roster: readonly string[]): DungeonView {
+  const sector = sectorOf(run);
+  const pending = run.atBoss
+    ? { title: '守護者', body: '奥から重い足音がする。', action: '挑む' }
+    : run.pending
+      ? run.pending.kind === 'boss-alt'
+        ? {
+            title: run.pending.title,
+            body: run.pending.body,
+            action: run.pending.action,
+            alt: hasUnownedRare(roster) ? run.pending.altAction : undefined,
+          }
+        : { title: run.pending.title, body: run.pending.body, action: run.pending.action }
+      : null;
+  return {
+    kind: 'dungeon',
+    sectorName: sector.name,
+    depth: run.depth,
+    goal: sector.depth,
+    hp: run.hp,
+    maxHp: run.maxHp,
+    // 通路の見た目だけを 4 段で回す。ゲーム状態ではない
+    corridor: run.depth % 4,
+    event: pending,
+    frontCount: run.party.front.filter((f) => f !== null).length,
+    reserveCount: run.party.reserve.length,
+    downedCount: run.downed.length,
+    potions,
+  };
+}
+
+function toTownView(state: GameState): TownView {
+  const card = (entry: CharacterEntry) => ({
+    id: entry.id,
+    name: entry.name,
+    faction: FACTION_NAMES[entry.faction],
+    skills: skillLabels(entry),
+  });
+  return {
+    kind: 'town',
+    gold: state.gold,
+    potions: state.potions,
+    sectors: SECTORS.map((s) => ({
+      id: s.id,
+      name: s.name,
+      depth: s.depth,
+      unlocked: s.id <= state.unlocked,
+    })),
+    tavern: state.tavern
+      .map((id) => CHARACTERS.find((c) => c.id === id))
+      .filter((c): c is CharacterEntry => c !== undefined)
+      .map((entry) => ({ ...card(entry), price: entry.price, affordable: state.gold >= entry.price })),
+    roster: state.roster
+      .map((id) => CHARACTERS.find((c) => c.id === id))
+      .filter((c): c is CharacterEntry => c !== undefined)
+      .map((entry) => ({ ...card(entry), rarity: entry.rarity })),
+  };
+}
+
 export function toViewModel(state: GameState): ViewModel {
   if (state.result) {
     return { screen: { kind: 'result', ...state.result }, log: [...state.log], seed: state.seed };
@@ -353,48 +581,15 @@ export function toViewModel(state: GameState): ViewModel {
     // 戦闘中は本編ログの末尾に battle.log をつないで、直近の場面が読めるようにする。
     // 本編ログそのものへは決着時 (settleBattle) にまとめて移すので、ここでは二重に積まない
     const log = [...state.log, ...state.battle.log].slice(-LOG_LIMIT);
-    return { screen: toBattleView(state.battle), log, seed: state.seed };
+    return { screen: toBattleView(state.battle, state.potions), log, seed: state.seed };
   }
 
   const log = [...state.log];
 
   const run = state.run;
   if (run) {
-    const sector = sectorOf(run);
-    const pending = run.atBoss
-      ? { title: '守護者', body: '奥から重い足音がする。', action: '挑む' }
-      : run.pending
-        ? { title: run.pending.title, body: run.pending.body, action: run.pending.action }
-        : null;
-    return {
-      screen: {
-        kind: 'dungeon',
-        sectorName: sector.name,
-        depth: run.depth,
-        goal: sector.depth,
-        hp: run.hp,
-        maxHp: run.maxHp,
-        // 通路の見た目だけを 4 段で回す。ゲーム状態ではない
-        corridor: run.depth % 4,
-        event: pending,
-      },
-      log,
-      seed: state.seed,
-    };
+    return { screen: toDungeonView(run, state.potions, state.roster), log, seed: state.seed };
   }
 
-  return {
-    screen: {
-      kind: 'town',
-      gold: state.gold,
-      sectors: SECTORS.map((s) => ({
-        id: s.id,
-        name: s.name,
-        depth: s.depth,
-        unlocked: s.id <= state.unlocked,
-      })),
-    },
-    log,
-    seed: state.seed,
-  };
+  return { screen: toTownView(state), log, seed: state.seed };
 }

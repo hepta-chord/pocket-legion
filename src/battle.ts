@@ -160,10 +160,23 @@ export interface BattleState {
   /** 支援スキルによるターン中の攻撃倍率への加算 */
   buff: number;
   turn: number;
+  /**
+   * 同一ターン内で攻撃が命中した回数。攻撃の基礎ダメージに (1 + 0.15 * combo) を掛け、
+   * 命中のたび 1 増える。回復・支援・バリアは数えず、途切れさせもしない。
+   * ターン終了で 0 に戻る (guard・buff と同じ扱い)
+   */
+  combo: number;
   outcome: BattleOutcome;
   log: LogLineView[];
   /** バランス計測用の集計 */
   stats: { swaps: number; downs: number };
+  /**
+   * ダウンして Party (front / reserve) から完全に外れた Fighter。
+   * downSlot / swapMembers で外れた本人をここに積む。捨てると出撃中の回復イベントで
+   * 復帰させる手段が無くなるため、呼び出し側 (game.ts) がここから回収して
+   * RunState.downed に積み直す形にする。回収後は呼び出し側が空にすること
+   */
+  left: Fighter[];
 }
 
 const LOG_LIMIT = 30;
@@ -173,8 +186,21 @@ function addLog(state: BattleState, kind: LogLineView['kind'], text: string): vo
   if (state.log.length > LOG_LIMIT) state.log.splice(0, state.log.length - LOG_LIMIT);
 }
 
+/**
+ * 物理スキルの turnBump はターン明けでしか戻らないので、戦闘がプレイヤーの行動中に
+ * 勝利で終わる (endTurn を経由しない) と上がったまま次の戦闘に持ち越ってしまう。
+ * 戦闘開始のたびに前衛・控え全員ぶん 0 に戻して、素のコストで始まるようにする
+ */
+function resetTurnBumps(party: Party): void {
+  for (const f of [...party.front, ...party.reserve]) {
+    if (!f) continue;
+    for (const s of f.skills) s.turnBump = 0;
+  }
+}
+
 export function startBattle(party: Party, hp: number, maxHp: number, enemyDef: EnemyDef): BattleState {
   party.swapCooldown = 0;
+  resetTurnBumps(party);
   const telegraph = hookSum(party, 'telegraph');
   const state: BattleState = {
     party,
@@ -190,12 +216,25 @@ export function startBattle(party: Party, hp: number, maxHp: number, enemyDef: E
     barrier: false,
     buff: 0,
     turn: 1,
+    combo: 0,
     outcome: 'ongoing',
     log: [],
     stats: { swaps: 0, downs: 0 },
+    left: [],
   };
   state.mana = Math.min(MANA_CAP, manaPayout(party));
   return state;
+}
+
+/** 出撃中1回限定・出撃を通したコスト上昇 (sortieBump) を戻す。回復イベント (泉・ボス前の回復) の仕事 */
+export function resetSortieProgress(party: Party): void {
+  for (const f of [...party.front, ...party.reserve]) {
+    if (!f) continue;
+    for (const s of f.skills) {
+      s.sortieBump = 0;
+      s.spent = false;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -221,7 +260,9 @@ export function whyCannotUse(state: BattleState, slot: number, skillIndex: numbe
 
 function hitEnemy(state: BattleState, attacker: Fighter, def: ActionSkillDef, enemy: EnemyState, rng: Rng): void {
   if (def.effect.kind !== 'attack') return;
-  let base = attacker.attack * def.effect.power * (1 + state.buff);
+  // コンボはその攻撃の発動時点の値を使う。1 発目は等倍、2 発目 +15%、3 発目 +30% ...
+  const comboMul = 1 + 0.15 * state.combo;
+  let base = attacker.attack * def.effect.power * (1 + state.buff) * comboMul;
   // 敵は 1 体にまとめて表すが、全体攻撃は元の頭数 (groupSize) ぶん威力が伸びる。
   // でないと「群れに強い」という全体攻撃の性格が消えるため
   if (def.effect.target === 'all') base *= 1 + 0.3 * (enemy.def.groupSize - 1);
@@ -230,8 +271,18 @@ function hitEnemy(state: BattleState, attacker: Fighter, def: ActionSkillDef, en
   if (resisted) dmg = Math.round(dmg / 2);
   dmg = Math.max(1, dmg);
   enemy.hp = Math.max(0, enemy.hp - dmg);
+  state.combo += 1;
   const note = resisted ? ' (耐性)' : '';
   addLog(state, 'good', `${attacker.name} の${def.name}。${enemy.def.name} に ${dmg}${note}。`);
+}
+
+/** 戦闘中に使う回復薬。マナもコンボも動かさない、battle.ts の外にある持ち物の効果 */
+export function usePotion(state: BattleState): number {
+  if (state.outcome !== 'ongoing') return 0;
+  const back = Math.round(state.maxHp / 2);
+  const before = state.hp;
+  state.hp = Math.min(state.maxHp, state.hp + back);
+  return state.hp - before;
 }
 
 function checkVictory(state: BattleState): void {
@@ -322,6 +373,7 @@ export function swapMembers(state: BattleState, moves: SwapMove[]): boolean {
     if (leaving) {
       leaving.downed = true;
       state.stats.downs += 1;
+      state.left.push(leaving);
       addLog(state, 'warn', `${leaving.name} が下がってダウン。${entering.name} が前に出た。`);
     } else {
       addLog(state, 'info', `${entering.name} が空いた枠に入った。`);
@@ -357,6 +409,7 @@ function downSlot(state: BattleState, slot: number, rng: Rng, cause: string, cov
   if (!f) return;
   f.downed = true;
   state.stats.downs += 1;
+  state.left.push(f);
 
   const candidates = party.reserve.filter((r) => r.faction === f.faction);
   if (candidates.length > 0) {
@@ -431,6 +484,7 @@ export function endTurn(state: BattleState, rng: Rng): void {
   state.turn += 1;
   state.guard = 0;
   state.buff = 0;
+  state.combo = 0;
   for (const f of [...state.party.front, ...state.party.reserve]) {
     if (!f) continue;
     for (const s of f.skills) s.turnBump = 0;

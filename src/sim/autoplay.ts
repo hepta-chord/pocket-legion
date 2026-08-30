@@ -1,9 +1,12 @@
 // ヘッドレスの自動プレイ。
 //
 // 出撃 1 回 = 深度を上げながらの連戦として回し、貪欲な方針で戦わせて
-// 勝率と消耗の形を測る。UI を通らず battle.ts を直接叩く。
+// 勝率と消耗の形を測る。UI (game.ts / run.ts) を通らず battle.ts を直接叩くが、
+// 酒場の代わり・ボス前の分岐・泉のリセット・recruit のデッキ加入は
+// 出撃の骨格に効くので、簡略化した形で反映する。
 //
-// まだ入っていないもの: レベル、陣営倍率、前衛の同陣営補正、イベントの多様さ。
+// まだ入っていないもの: レベル、陣営倍率、前衛の同陣営補正、治療薬以外のアイテム、
+// treasure/trap の抽選そのもの (金と HP は測定対象に含めていない)。
 // ここの数字は骨格の健全性 (詰み方・戦術の偏り) を見るためのもので、最終調整ではない。
 
 import {
@@ -12,6 +15,7 @@ import {
   newParty,
   partyMaxHp,
   refillFront,
+  resetSortieProgress,
   startBattle,
   swapMembers,
   useGuard,
@@ -22,9 +26,38 @@ import {
   type Party,
   type SwapMove,
 } from '../battle';
-import { buildFighter, CHARACTERS } from '../data/characters';
+import { buildFighter, CHARACTERS, type CharacterEntry } from '../data/characters';
 import { makeBoss, makeFoe } from '../data/enemies';
 import { Rng } from '../rng';
+
+/** 重複無しで n 件抜く。tavern の抽選・加入イベントの選択と同じ考え方 */
+function pickN<T>(pool: readonly T[], n: number, rng: Rng): T[] {
+  const remaining = [...pool];
+  const out: T[] = [];
+  for (let i = 0; i < n && remaining.length > 0; i++) {
+    const idx = rng.int(0, remaining.length - 1);
+    out.push(remaining[idx]);
+    remaining.splice(idx, 1);
+  }
+  return out;
+}
+
+/** ダンジョン内の加入イベント (recruit) の簡略版。所持していないコモンを 1 人デッキに足す */
+function addRecruit(party: Party, roster: Set<string>, rng: Rng): void {
+  const candidates = CHARACTERS.filter((c) => c.rarity === 'common' && !roster.has(c.id));
+  if (candidates.length === 0) return;
+  const picked = rng.pick(candidates);
+  roster.add(picked.id);
+  const fighter = buildFighter(picked);
+  const idx = party.front.findIndex((f) => f === null);
+  if (idx >= 0) party.front[idx] = fighter;
+  else party.reserve.push(fighter);
+}
+
+// events.ts の重み (recruit 5/100・spring 10/100) を、深度 +2 ごとの 1 区間
+// (advance 2 回ぶん) の近似確率に丸めたもの。細かい抽選はここでは再現しない
+const RECRUIT_CHANCE_PER_STEP = 0.1;
+const SPRING_CHANCE_PER_STEP = 0.19;
 
 // ---------------------------------------------------------------------------
 // 貪欲な行動方針
@@ -144,14 +177,15 @@ const TURN_CAP = 25;
 const BOSS_TURN_CAP = 200;
 
 export function playSortie(sectorId: number, startDepth: number, rng: Rng): SortieResult {
-  // プールから 10 人を無作為に連れて行く
-  const picked = [...CHARACTERS]
-    .map((e) => ({ e, key: rng.next() }))
-    .sort((a, b) => a.key - b.key)
-    .slice(0, 10)
-    .map(({ e }) => buildFighter(e));
-  const party: Party = newParty(picked.slice(0, 6), picked.slice(6));
-  const maxHp = partyMaxHp(party);
+  // 出撃開始時: hero + mate + コモンから rng で 3 人 (酒場の代わり)
+  const hero = CHARACTERS.find((c) => c.id === 'hero')!;
+  const mate = CHARACTERS.find((c) => c.id === 'mate')!;
+  const commons = CHARACTERS.filter((c) => c.rarity === 'common' && c.id !== mate.id);
+  const startCommons = pickN(commons, 3, rng);
+  const roster = new Set<string>(['hero', mate.id, ...startCommons.map((c) => c.id)]);
+  const initial: CharacterEntry[] = [hero, mate, ...startCommons];
+  const party: Party = newParty(initial.map(buildFighter), []);
+  let maxHp = partyMaxHp(party);
   let hp = maxHp;
 
   const result: SortieResult = {
@@ -168,6 +202,15 @@ export function playSortie(sectorId: number, startDepth: number, rng: Rng): Sort
   // 深度 +2 ごとに 1 戦。区画 1 なら深度 2〜10 の 5 連戦にあたる
   for (let step = 0; step < 5; step++) {
     const depth = startDepth + step * 2;
+
+    // 泉のリセットと recruit のデッキ加入を、区間ごとの近似確率で反映する
+    if (rng.chance(RECRUIT_CHANCE_PER_STEP)) addRecruit(party, roster, rng);
+    if (rng.chance(SPRING_CHANCE_PER_STEP)) {
+      hp = Math.min(maxHp, hp + Math.round(maxHp * 0.5));
+      resetSortieProgress(party);
+    }
+    maxHp = partyMaxHp(party);
+
     const state = startBattle(party, hp, maxHp, makeFoe(depth, rng));
     let turns = 0;
     while (state.outcome === 'ongoing' && turns < TURN_CAP) {
@@ -187,6 +230,23 @@ export function playSortie(sectorId: number, startDepth: number, rng: Rng): Sort
     // 泉や回復薬の代わり。戦間で少し立て直す
     hp = Math.min(maxHp, hp + Math.round(maxHp * 0.2));
     refillFront(party);
+  }
+
+  // ボス前の分岐イベント。HP が 6 割未満なら回復、以上ならレア加入を選ぶ
+  if (hp < maxHp * 0.6) {
+    hp = maxHp;
+    resetSortieProgress(party);
+  } else {
+    const rareCandidates = CHARACTERS.filter((c) => c.rarity === 'rare' && !roster.has(c.id));
+    if (rareCandidates.length > 0) {
+      const picked = rng.pick(rareCandidates);
+      roster.add(picked.id);
+      const fighter = buildFighter(picked);
+      const idx = party.front.findIndex((f) => f === null);
+      if (idx >= 0) party.front[idx] = fighter;
+      else party.reserve.push(fighter);
+      maxHp = partyMaxHp(party);
+    }
   }
 
   // 区画の最深部のボス。雑魚と違って長期戦になるので、上限もターン数も別に持つ
