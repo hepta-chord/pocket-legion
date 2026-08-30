@@ -4,6 +4,7 @@
 // ここは render/ を import しない。文字で描くか画像で描くかを知らないままにしておく。
 
 import {
+  BUFF_STACK_MAX,
   DEFENSE_COST,
   DEFENSE_MAX,
   effectiveCost,
@@ -20,14 +21,17 @@ import {
   useSkill,
   whyCannotUse,
   type BattleState,
+  type EnemyAction,
   type EnemyDef,
+  type EnemyState,
   type Fighter,
   type SwapMove,
 } from './battle';
 import { CHARACTERS, skillLabels, type CharacterEntry } from './data/characters';
 import { FACTION_NAMES } from './data/factions';
 import { makeBoss, makeFoe } from './data/enemies';
-import { SECTORS, sectorById } from './data/sectors';
+import { DUNGEONS } from './data/dungeons';
+import { sectorById } from './data/sectors';
 import type { ActionSkillDef, PassiveDef, SkillCategory } from './data/skills';
 import {
   autoFillFormation,
@@ -285,8 +289,8 @@ function finishRun(state: GameState, won: boolean, rng: Rng): void {
 // ---------------------------------------------------------------------------
 // 戦闘
 
-function enterBattle(state: GameState, run: RunState, kind: BattleKind, enemyDef: EnemyDef, line: string): void {
-  state.battle = startBattle(run.party, run.hp, run.maxHp, enemyDef, state.manaBonus);
+function enterBattle(state: GameState, run: RunState, kind: BattleKind, enemyDef: EnemyDef, line: string, rng: Rng): void {
+  state.battle = startBattle(run.party, run.hp, run.maxHp, enemyDef, rng, state.manaBonus);
   state.battleKind = kind;
   addLog(state, 'warn', line);
 }
@@ -337,7 +341,9 @@ function settleBattle(state: GameState, run: RunState, rng: Rng): void {
     if (wasBoss) {
       // 中層 (区画 2) のボスを倒すと、マナ払い出しの奇数ターンが底上げされ 3/3 の律動になる
       if (run.sectorId === 2) state.manaBonus = Math.max(state.manaBonus, 1);
-      if (state.unlocked === run.sectorId && state.unlocked < SECTORS.length) {
+      // 今は迷宮 1 本 (DUNGEONS[0]) だけなので決め打ちで参照する。迷宮が増えたら
+      // run 側に迷宮 id を持たせて引き直す形になる
+      if (state.unlocked === run.sectorId && state.unlocked < DUNGEONS[0].sectors.length) {
         state.unlocked += 1;
         addLog(state, 'good', `${sectorById(state.unlocked).name}への道が開いた。`);
       }
@@ -381,7 +387,7 @@ export function step(state: GameState, action: Action): void {
       if (!run || state.battle) break;
       if (run.atBoss) {
         const boss = makeBoss(run.sectorId, rng);
-        enterBattle(state, run, 'boss', boss, `${boss.name} が立ちはだかる。`);
+        enterBattle(state, run, 'boss', boss, `${boss.name} が立ちはだかる。`, rng);
         break;
       }
       if (!run.pending) break;
@@ -391,7 +397,7 @@ export function step(state: GameState, action: Action): void {
         case 'elite': {
           run.pending = null;
           const foe = makeFoe(run.depth, rng, kind === 'elite', run.sectorId);
-          enterBattle(state, run, kind, foe, `${foe.name} が立ちはだかる。`);
+          enterBattle(state, run, kind, foe, `${foe.name} が立ちはだかる。`, rng);
           break;
         }
         case 'boss-alt': {
@@ -628,6 +634,39 @@ function passiveDetailOf(p: PassiveDef): PassiveDetailView {
   return { name: p.name, effect: passiveEffectText(p) };
 }
 
+/**
+ * 予告バッジ用の書き下しラベル。「大3」「ダ2」のような略記をやめ、実際の技名で見せる。
+ * 大技は EnemyDef.bigName (雑魚は総称の「大技」、ボスは固有名)、ダウン攻撃は名前を持たないので総称のまま
+ */
+function bigCountdownLabel(e: EnemyState): string {
+  return `${e.def.bigName} あと${e.bigCountdown}`;
+}
+
+function downCountdownLabel(e: EnemyState): string | null {
+  return e.downCountdown === null ? null : `ダウン攻撃 あと${e.downCountdown}`;
+}
+
+/**
+ * 「次ターン」予告パネル用の短い行動名。大技・ダウン攻撃のターンは総称 (技名は出さない。
+ * 技名は状態アイコン側の予告バッジで見せる)、それ以外は通常行動の種類をそのまま言葉にする
+ */
+function enemyActionLabel(action: EnemyAction): string {
+  switch (action.kind) {
+    case 'attack':
+      return '攻撃';
+    case 'stun':
+      return 'スタン';
+    case 'cheer':
+      return '鼓舞';
+    case 'ward':
+      return '防御';
+    case 'big':
+      return '大技';
+    case 'downstrike':
+      return 'ダウン攻撃';
+  }
+}
+
 function toBattleView(b: BattleState, potions: number): BattleView {
   const e = b.enemy;
   return {
@@ -642,7 +681,11 @@ function toBattleView(b: BattleState, potions: number): BattleView {
     turn: b.turn,
     combo: b.combo,
     cheerStacks: b.cheer.stacks,
+    cheerTurns: b.cheer.turns,
+    cheerMax: BUFF_STACK_MAX,
     wardStacks: b.ward.stacks,
+    wardTurns: b.ward.turns,
+    wardMax: BUFF_STACK_MAX,
     fleeIn: b.fleeIn,
     potions,
     enemy: {
@@ -652,10 +695,12 @@ function toBattleView(b: BattleState, potions: number): BattleView {
       maxHp: e.def.maxHp,
       resist: resistLabel(e.def.resist),
       bigCountdown: e.bigCountdown,
-      downCountdown: e.downCountdown,
+      bigLabel: bigCountdownLabel(e),
+      downLabel: downCountdownLabel(e),
       alive: e.hp > 0,
       isBoss: e.def.isBoss,
     },
+    nextActionLabels: e.hp > 0 ? e.nextActions.map(enemyActionLabel) : [],
     slots: b.party.front.map((f, slot) => {
       if (!f) return null;
       return {
@@ -790,7 +835,9 @@ function toTownView(state: GameState): TownView {
     kind: 'town',
     gold: state.gold,
     potions: state.potions,
-    sectors: SECTORS.map((s) => ({
+    // 今は迷宮 1 本 (DUNGEONS[0]) だけなので、その区画一覧をそのまま「迷宮の一覧」として出す。
+    // 迷宮が増えたら、ここを dungeons 一覧 + 選んだ迷宮の区画一覧の 2 段に分ける
+    sectors: DUNGEONS[0].sectors.map((s) => ({
       id: s.id,
       name: s.name,
       depth: s.depth,

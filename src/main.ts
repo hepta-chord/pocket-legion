@@ -6,6 +6,7 @@ import { eventIconFor } from './render/event-icons';
 import { portraitFor } from './render/portraits';
 import type { Renderer } from './render/renderer';
 import { TextRenderer } from './render/text-renderer';
+import { TOWN_ART } from './render/town-art';
 import { randomSeedString } from './rng';
 import { loadGame, saveGame } from './save';
 import type { BattleView, DungeonView, FormationCharacterView, TownView, ViewModel } from './view';
@@ -42,7 +43,7 @@ if (loaded.discarded) addLog(state, 'info', '前のセーブは形式が古い�
 // 理由: セーブしたい「進行」ではなく「今どの画面を見ているか」でしかなく、
 // リロードすれば拠点トップやダンジョンの通常画面に戻ってもプレイヤーは困らないため。
 // (docs/plan.md 4 節の「main.ts のローカル状態にしてもよい」を選んだ)
-type TownPage = 'home' | 'tavern' | 'formation';
+type TownPage = 'home' | 'dungeon-list' | 'tavern' | 'formation';
 let page: TownPage = 'home';
 let dungeonFormationOpen = false;
 
@@ -140,24 +141,56 @@ function hpGroup(label: string, hp: number, maxHp: number, cls = ''): HTMLElemen
   return wrap;
 }
 
-/** マナを ●●●○○○○○○○ の丸の列にする。現在値まで塗り、上限まで空丸 */
-function manaDots(mana: number, cap: number): string {
-  const filled = Math.max(0, Math.min(cap, mana));
-  return '●'.repeat(filled) + '○'.repeat(Math.max(0, cap - filled));
+/**
+ * ●●●○○○○○○○ のような丸の列にする。現在値まで塗り、上限まで空丸。
+ * マナだけでなく、鼓舞・ガード (ward) のスタック表示にも使う共通部品
+ */
+function dotsOf(count: number, max: number): string {
+  const filled = Math.max(0, Math.min(max, count));
+  return '●'.repeat(filled) + '○'.repeat(Math.max(0, max - filled));
+}
+
+/** 防御の枚数を ◆◆◇◇ の並びにする。マナの丸と同じ考え方 (積んだ枚数まで塗り、上限まで空) */
+function defenseIcons(defense: number, max: number): string {
+  const filled = Math.max(0, Math.min(max, defense));
+  return '◆'.repeat(filled) + '◇'.repeat(Math.max(0, max - filled));
 }
 
 function renderStatus(vm: ViewModel): void {
   status.innerHTML = '';
   const s = vm.screen;
   if (s.kind === 'battle') {
+    // 味方と敵の HP バーを横並びで置く。隣り合っていれば削り合いの優劣が一目で分かる。
+    // 敵が既に倒れているコマ (result 遷移前の一瞬) では敵バーを出さず、味方だけにする
+    const hpRow = document.createElement('div');
+    hpRow.className = 'hp-row';
+    hpRow.append(hpGroup('味方', s.hp, s.maxHp));
+    if (s.enemy.alive) {
+      const enemyLabel = s.enemy.groupSize > 1 ? `${s.enemy.name}(${s.enemy.groupSize})` : s.enemy.name;
+      hpRow.append(hpGroup(enemyLabel, s.enemy.hp, s.enemy.maxHp, 'enemy'));
+    }
+    status.append(hpRow);
+
+    const meta = document.createElement('div');
+    meta.className = 'status-meta';
     const mana = document.createElement('span');
     mana.className = 'mana-dots';
-    mana.textContent = `マナ ${manaDots(s.mana, s.manaCap)}`;
-    status.append(hpGroup('HP', s.hp, s.maxHp), mana, statusSpan(`ターン ${s.turn}`));
-    status.append(statusSpan(`防御 ${s.defense}/${s.defenseMax}`));
-    if (s.fleeIn !== null) status.append(statusSpan(`離脱まで ${s.fleeIn}`, 'warn'));
+    mana.textContent = `マナ ${dotsOf(s.mana, s.manaCap)}`;
+    meta.append(mana, statusSpan(`ターン ${s.turn}`));
+    const defense = document.createElement('span');
+    defense.className = 'defense-icons';
+    defense.textContent = `防御 ${defenseIcons(s.defense, s.defenseMax)}`;
+    meta.append(defense);
+    // 逃走までの残りターンは味方の状態アイコン (iconsAlly) 側に出す。
+    // ステータス欄の文字だと戦闘中に見落とし、あと何ターンで抜けられるか分からなくなるため
+    status.append(meta);
   } else if (s.kind === 'dungeon') {
-    status.append(statusSpan(`HP ${s.hp}/${s.maxHp}`), statusSpan(`${s.sectorName} 深度 ${s.depth}/${s.goal}`));
+    // 探索中は敵がいないので、味方の HP バーだけを幅いっぱいに出す
+    const hpRow = document.createElement('div');
+    hpRow.className = 'hp-row';
+    hpRow.append(hpGroup('HP', s.hp, s.maxHp, 'full'));
+    status.append(hpRow);
+    status.append(statusSpan(`${s.sectorName} 深度 ${s.depth}/${s.goal}`));
   } else if (s.kind === 'town') {
     status.append(statusSpan(`所持金 ${s.gold} G`), statusSpan(`回復薬 ${s.potions}`), statusSpan(`seed ${vm.seed}`));
   } else {
@@ -168,24 +201,20 @@ function renderStatus(vm: ViewModel): void {
 // ---------------------------------------------------------------------------
 // ステージ本体 (拠点・ダンジョンのイベント・結果)。戦闘は #portrait 側が受け持つ
 
-function renderHomeStage(s: TownView): void {
+// ホーム・迷宮一覧は選択肢を操作クラスタ側に持つので、ここでは短い見出しだけ出す。
+// ステージの奥にはロビー (迷宮都市) の情景が常に見えている (renderPortrait 側)
+function renderHomeStage(): void {
   const head = document.createElement('p');
   head.className = 'lead';
-  head.textContent = 'どこへ潜るか。';
+  head.textContent = 'どこへ行く?';
   stageBody.append(head);
+}
 
-  const list = document.createElement('div');
-  list.className = 'list';
-  for (const sec of s.sectors) {
-    list.append(
-      actionButton(
-        `${sec.name} (深度 ${sec.depth})${sec.unlocked ? '' : ' — 未開放'}`,
-        { type: 'sortie', sectorId: sec.id },
-        !sec.unlocked,
-      ),
-    );
-  }
-  stageBody.append(list);
+function renderDungeonListStage(): void {
+  const head = document.createElement('p');
+  head.className = 'lead';
+  head.textContent = 'どの迷宮へ?';
+  stageBody.append(head);
 }
 
 function renderTavernStage(s: TownView): void {
@@ -244,12 +273,27 @@ function renderFormationStage(s: TownView): void {
   stageBody.append(note);
 }
 
+/** ステージ下端に重ねる、見出し + 本文だけの小箱。探索のイベント表示と戦闘の予告パネルが共有する */
+function eventBox(title: string, body: string): HTMLElement {
+  const box = document.createElement('div');
+  box.className = 'event-box';
+  const titleEl = document.createElement('p');
+  titleEl.className = 'stage-title';
+  titleEl.textContent = title;
+  const bodyEl = document.createElement('p');
+  bodyEl.className = 'stage-body-text';
+  bodyEl.textContent = body;
+  box.append(titleEl, bodyEl);
+  return box;
+}
+
 function renderStageBody(vm: ViewModel): void {
   stageBody.innerHTML = '';
   const s = vm.screen;
 
   if (s.kind === 'town') {
-    if (page === 'home') renderHomeStage(s);
+    if (page === 'home') renderHomeStage();
+    else if (page === 'dungeon-list') renderDungeonListStage();
     else if (page === 'tavern') renderTavernStage(s);
     else renderFormationStage(s);
     return;
@@ -257,16 +301,16 @@ function renderStageBody(vm: ViewModel): void {
 
   if (s.kind === 'dungeon') {
     if (!s.event) return;
-    const box = document.createElement('div');
-    box.className = 'event-box';
-    const title = document.createElement('p');
-    title.className = 'stage-title';
-    title.textContent = s.event.title;
-    const body = document.createElement('p');
-    body.className = 'stage-body-text';
-    body.textContent = s.event.body;
-    box.append(title, body);
-    stageBody.append(box);
+    stageBody.append(eventBox(s.event.title, s.event.body));
+    return;
+  }
+
+  // 戦闘: 敵が次のターンに何をするかを予告する。探索のイベント表示と同じ見た目にして
+  // 画面の語彙を揃える (見た目が揃うと、戦闘中も探索と同じ場所を見ればいいと分かる)。
+  // ボスは大技・ダウン攻撃のターン以外は 2 回行動するので、ラベルが 2 つ並ぶ
+  if (s.kind === 'battle') {
+    if (!s.enemy.alive || s.nextActionLabels.length === 0) return;
+    stageBody.append(eventBox('次ターン', s.nextActionLabels.join(' / ')));
     return;
   }
 
@@ -288,28 +332,34 @@ function renderPortrait(vm: ViewModel): void {
   portraitEl.innerHTML = '';
   portraitEl.classList.remove('visible');
 
+  // 拠点は「今どこにいるか」を探索・戦闘と同じ固定枠で見せる。ページによらず同じ絵にする
+  // (拠点はダンジョンのように種別が複数無いので、迷宮都市の情景 1 枚で足りる)
+  if (vm.screen.kind === 'town') {
+    portraitEl.classList.add('visible');
+    const art = document.createElement('pre');
+    art.className = 'portrait-art town';
+    art.textContent = TOWN_ART.join('\n');
+    portraitEl.append(art);
+    return;
+  }
+
   if (vm.screen.kind === 'battle') {
     portraitEl.classList.add('visible');
     const e = vm.screen.enemy;
 
+    // 敵の HP バーはステータス欄 (味方と横並び) に出すので、ここには名前と群れの規模だけ残す
     const info = document.createElement('div');
     info.className = 'enemy-info';
     const name = document.createElement('p');
     name.className = 'enemy-name';
     name.textContent = e.groupSize > 1 ? `${e.name} (${e.groupSize})` : e.name;
     info.append(name);
-
-    const hpWrap = document.createElement('div');
-    hpWrap.className = 'enemy-hp-wrap';
-    if (e.alive) {
-      hpWrap.append(hpGroup('HP', e.hp, e.maxHp, 'enemy'));
-    } else {
+    if (!e.alive) {
       const hp = document.createElement('p');
       hp.className = 'enemy-hp';
       hp.textContent = '撃破';
-      hpWrap.append(hp);
+      info.append(hp);
     }
-    info.append(hpWrap);
     portraitEl.append(info);
 
     const art = document.createElement('pre');
@@ -346,20 +396,25 @@ function renderIcons(vm: ViewModel): void {
   if (vm.screen.kind !== 'battle') return;
   const s = vm.screen;
 
-  // ステージ左: 味方の状態を縦列で。防御の枚数・逃走の残りターンは上部ステータスに出すので、
-  // ここではバフ・バリアだけを並べる。0 や無しのときは出さない
+  // ステージ左: 味方の状態を縦列で。防御の枚数はステータス欄のアイコンが主なので、
+  // ここでは出さない (二重表示にしない)。0 や無しのときは出さない。
+  // 鼓舞・ガードは枚数のドットに残りターンを添える。逃走の残りターンも
+  // ステータス欄の文字だと見落とすため、ここに常時見える状態アイコンとして出す
   if (s.barrier) iconsAlly.append(badge('バリア'));
-  if (s.cheerStacks > 0) iconsAlly.append(badge(`鼓舞${s.cheerStacks}`, 'warn'));
-  if (s.wardStacks > 0) iconsAlly.append(badge(`ガ${s.wardStacks}`, 'warn'));
+  if (s.cheerStacks > 0) iconsAlly.append(badge(`鼓舞 ${dotsOf(s.cheerStacks, s.cheerMax)} ${s.cheerTurns}`, 'warn'));
+  if (s.wardStacks > 0) iconsAlly.append(badge(`ガード ${dotsOf(s.wardStacks, s.wardMax)} ${s.wardTurns}`, 'warn'));
   if (s.combo > 0) iconsAlly.append(badge(`コンボ${s.combo}`, 'warn'));
+  if (s.fleeIn !== null) iconsAlly.append(badge(`離脱 あと${s.fleeIn}`, 'warn'));
 
-  // ステージ右: 敵の状態を縦列で。耐性・大技とダウン攻撃の予告・ボスの印
+  // ステージ右: 敵の状態を縦列で。耐性・大技とダウン攻撃の予告・ボスの印。
+  // 予告は「大N」「ダN」のような略記をやめ、実際の技名まで書き下す (game.ts が組み立てた
+  // bigLabel/downLabel をそのまま出すだけで、main.ts では文字列を組み立てない)
   const e = s.enemy;
   if (e.alive) {
     if (e.resist) iconsEnemy.append(badge(e.resist === '物理' ? '物理耐' : '魔法耐'));
-    iconsEnemy.append(badge(`大${e.bigCountdown}`, e.bigCountdown === 1 ? 'warn' : ''));
+    iconsEnemy.append(badge(e.bigLabel, e.bigCountdown === 1 ? 'warn' : ''));
     // ダウン攻撃の予告は大技と別色にする (down クラス)
-    if (e.downCountdown !== null) iconsEnemy.append(badge(`ダ${e.downCountdown}`, 'down'));
+    if (e.downLabel) iconsEnemy.append(badge(e.downLabel, 'down'));
     if (e.isBoss) iconsEnemy.append(badge('ボス', 'boss'));
   }
 }
@@ -718,9 +773,11 @@ function renderBattleCluster(s: BattleView): void {
 
   s.slots.forEach((slot, i) => slotsEl.append(battleSlotCard(slot, i)));
 
-  // 操作は押す頻度で 2 群に分ける。常用群 (ターン終了・防御) は毎ターン押すので大きく上に、
-  // 臨時群 (回復薬・編成・逃げる) はたまにしか押さないので小さく下にまとめる。
-  // 防御の枚数・逃走の残りターンは上部のステータス欄に出すので、ボタン側に数字は乗せない
+  // 操作は押す頻度で 2 群に分け、キャラ枠の行の高さにきっちり揃える。
+  // 上行 (キャラ枠 1 行目と同じ高さ) に常用群 (ターン終了・防御) を 2 分割、
+  // 下行 (2 行目と同じ高さ) に臨時群 (回復薬・編成・逃げる) を 3 分割で置く。
+  // 比率を行と無関係に取ると、キャラ枠の罫線と操作列の境目がずれて雑然と見える。
+  // 防御の枚数・逃走の残りターンはステータス欄に出すので、ボタン側に数字は乗せない
   const primary = document.createElement('div');
   primary.className = 'controls-primary';
   primary.append(actionButton('ターン終了', { type: 'battle-end-turn' }));
@@ -792,18 +849,27 @@ function renderDungeonCluster(s: DungeonView): void {
 
   s.front.forEach((slot) => slotsEl.append(displaySlotCard(slot.character)));
 
+  // 戦闘画面と同じ考え方で、キャラ枠の行の高さに操作を揃える。
+  // 上行 = 常用の「進む」(イベント解決中はその選択肢)、下行 = 引き返す・回復薬・編成
+  const primary = document.createElement('div');
+  primary.className = 'controls-primary';
   if (s.event) {
-    controlsEl.append(actionButton(s.event.action, { type: 'resolve' }, advancing));
-    if (s.event.alt) controlsEl.append(actionButton(s.event.alt, { type: 'resolve-alt' }, advancing));
+    primary.append(actionButton(s.event.action, { type: 'resolve' }, advancing));
+    if (s.event.alt) primary.append(actionButton(s.event.alt, { type: 'resolve-alt' }, advancing));
   } else {
-    controlsEl.append(navButton('進む', () => startAdvanceAnimation(toViewModel(state)), advancing));
+    primary.append(navButton('進む', () => startAdvanceAnimation(toViewModel(state)), advancing));
   }
-  controlsEl.append(actionButton('引き返す', { type: 'retreat' }, advancing));
-  controlsEl.append(actionButton(`回復薬 (${s.potions})`, { type: 'potion' }, advancing || s.potions <= 0));
-  controlsEl.append(navButton('編成', () => {
+  controlsEl.append(primary);
+
+  const secondary = document.createElement('div');
+  secondary.className = 'controls-secondary';
+  secondary.append(actionButton('引き返す', { type: 'retreat' }, advancing));
+  secondary.append(actionButton(`回復薬 (${s.potions})`, { type: 'potion' }, advancing || s.potions <= 0));
+  secondary.append(navButton('編成', () => {
     dungeonFormationOpen = true;
     render();
   }, advancing));
+  controlsEl.append(secondary);
 }
 
 function renderTownCluster(s: TownView): void {
@@ -819,21 +885,63 @@ function renderTownCluster(s: TownView): void {
     return;
   }
 
-  cluster.classList.add('no-slots');
-  if (page === 'tavern') {
-    controlsEl.append(navButton('戻る', () => {
-      page = 'home';
+  // 編成以外の拠点ページは、探索画面と同じくキャラ枠に前衛を表示専用で出す (タップしても何も起きない)。
+  // 拠点の語彙を探索・戦闘と揃えるための表示で、ここから編成は変えられない
+  s.formation.slots.forEach((slot) => slotsEl.append(displaySlotCard(slot.character)));
+
+  if (page === 'home') {
+    // 上行 (キャラ枠 1 行目) に主たる行き先の「迷宮」を大きく、
+    // 下行 (2 行目) に「酒場」「編成」を並べる。編成がキャラ枠のすぐ右に来るので、
+    // 編集する対象 (前衛の顔ぶれ) と開くボタンが隣り合う
+    const primary = document.createElement('div');
+    primary.className = 'controls-primary';
+    primary.append(navButton('迷宮', () => {
+      page = 'dungeon-list';
       render();
     }));
+    controlsEl.append(primary);
+
+    const secondary = document.createElement('div');
+    secondary.className = 'controls-secondary';
+    secondary.append(navButton('酒場', () => {
+      page = 'tavern';
+      render();
+    }));
+    secondary.append(navButton('編成', () => {
+      page = 'formation';
+      render();
+    }));
+    controlsEl.append(secondary);
     return;
   }
 
-  controlsEl.append(navButton('酒場', () => {
-    page = 'tavern';
-    render();
-  }));
-  controlsEl.append(navButton('編成', () => {
-    page = 'formation';
+  if (page === 'dungeon-list') {
+    // 一覧の項目と「戻る」を同じ操作列に置き、キャラ枠の行の高さに揃える。
+    // 項目数がいくつでも上下半分に分かれるよう、前半を上行・残り (戻るを含む) を下行に置く
+    const primary = document.createElement('div');
+    primary.className = 'controls-primary';
+    const secondary = document.createElement('div');
+    secondary.className = 'controls-secondary';
+    const half = Math.ceil(s.sectors.length / 2);
+    s.sectors.forEach((sec, i) => {
+      const btn = actionButton(
+        `${sec.name} (深度 ${sec.depth})${sec.unlocked ? '' : ' — 未開放'}`,
+        { type: 'sortie', sectorId: sec.id },
+        !sec.unlocked,
+      );
+      (i < half ? primary : secondary).append(btn);
+    });
+    secondary.append(navButton('戻る', () => {
+      page = 'home';
+      render();
+    }));
+    controlsEl.append(primary, secondary);
+    return;
+  }
+
+  // 酒場 (タップして開く詳細はモーダル側で処理する。ここは戻るだけ)
+  controlsEl.append(navButton('戻る', () => {
+    page = 'home';
     render();
   }));
 }

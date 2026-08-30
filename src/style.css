@@ -64,11 +64,15 @@ button:active:not(:disabled) {
   overflow: hidden;
 }
 
-/* ステータス欄は操作クラスタに高さを譲るため、控えめなサイズに詰めてある */
+/* ステータス欄は操作クラスタに高さを譲るため、控えめなサイズに詰めてある。
+   メッセージの下・操作クラスタのすぐ上に置く (親指の近くに数字を集めるため)。
+   hp-row / status-meta は flex-basis:100% で単独の行を強制し、
+   拠点・結果画面の素の span はそのまま横一列に並べる (どちらも同じ #status を使い回す) */
 #status {
   flex: 0 0 auto;
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 3px 10px;
   color: var(--dim);
   letter-spacing: 0.01em;
@@ -76,28 +80,53 @@ button:active:not(:disabled) {
   line-height: 1.25;
 }
 
-#status .hp-num,
-#status .mana-num,
-#status .gold-num {
-  color: var(--fg);
-}
-
 #status .warn {
   color: var(--warn);
 }
 
-/* HP バー (パーティ・敵の共通部品)。数値は併記し、バーは補助として添える */
-.hp-group {
-  display: inline-flex;
+/* 味方 HP バーと敵 HP バーを横並びにする行。隣り合っていれば削り合いの優劣が一目で分かる */
+.hp-row {
+  flex: 1 1 100%;
+  display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 10px;
+}
+
+/* マナ・ターン・防御アイコン・離脱までの残りターンをまとめる行 */
+.status-meta {
+  flex: 1 1 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 10px;
+}
+
+/* HP バー (パーティ・敵の共通部品)。数値は併記し、バーは補助として添える。
+   横並びにしても幅を分け合えるよう、テキストとバーは縦積みにして幅いっぱいを使う */
+.hp-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 0;
+}
+
+/* 探索中は敵がいないので味方だけの単独行になる。幅いっぱいに広げてよい */
+.hp-group.full {
+  flex: 1 1 auto;
+}
+
+.hp-group > span:first-child {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .hp-track {
-  display: inline-block;
-  width: 64px;
-  height: 7px;
-  border-radius: 4px;
+  display: block;
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
   background: var(--panel-raised);
   border: 1px solid var(--line);
   overflow: hidden;
@@ -109,16 +138,14 @@ button:active:not(:disabled) {
   background: var(--good);
 }
 
-.hp-group.enemy .hp-track {
-  width: 110px;
-}
-
 .hp-group.enemy .hp-fill {
   background: var(--bad);
 }
 
-/* マナの丸表示。塗り丸 (現在値) と空丸 (上限まで) を並べるだけの文字列なので装飾は最小限 */
-.mana-dots {
+/* マナの丸表示・防御のアイコン表示。塗り (現在値・積んだ枚数) と空 (上限まで) を
+   並べるだけの文字列なので装飾は最小限にする */
+.mana-dots,
+.defense-icons {
   letter-spacing: 1px;
 }
 
@@ -152,9 +179,10 @@ button:active:not(:disabled) {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  /* 上は enemy-info (名前・HP バー) の分だけ空ける。
-     状態アイコンは横一列にして敵画像に被せるので、左右の余白は最小限でよい */
-  padding: 40px 8px 6px;
+  /* 上は enemy-info (名前・群れの規模) の分だけ空ける。HP バーはステータス欄に移したので
+     ここは名前ぶんの余白でよい。状態アイコンは横一列にして敵画像に被せるので、
+     左右の余白は最小限でよい */
+  padding: 26px 8px 6px;
   overflow: hidden;
 }
 
@@ -175,6 +203,11 @@ button:active:not(:disabled) {
 
 .portrait-art.boss {
   color: var(--warn);
+}
+
+/* 拠点の情景。戦闘の敵・探索のイベントと違って警戒色にする理由が無いので、地の文と同じ色にする */
+.portrait-art.town {
+  color: var(--fg);
 }
 
 /* 探索中のイベントアイコン。将来 <img> に差し替えても枠のサイズは変えずに済むよう、
@@ -224,11 +257,6 @@ button:active:not(:disabled) {
   font-size: 14px;
 }
 
-.enemy-hp-wrap {
-  display: flex;
-  justify-content: center;
-}
-
 .enemy-hp,
 .enemy-cd {
   color: var(--dim);
@@ -240,7 +268,7 @@ button:active:not(:disabled) {
   font-weight: bold;
 }
 
-/* ステージに重ねる文面 (拠点の見出し、ダンジョンのイベント、結果) */
+/* ステージに重ねる文面 (拠点の見出し、ダンジョンのイベント、戦闘の次ターン予告、結果) */
 #stage-body {
   display: none;
   position: absolute;
@@ -253,11 +281,14 @@ button:active:not(:disabled) {
 
 #stage[data-screen='town'] #stage-body,
 #stage[data-screen='dungeon'] #stage-body,
+#stage[data-screen='battle'] #stage-body,
 #stage[data-screen='result'] #stage-body {
   display: flex;
 }
 
-#stage[data-screen='dungeon'] #stage-body {
+/* 戦闘の次ターン予告・探索のイベント表示はどちらも敵画像/通路の下端に重ねる小箱にする */
+#stage[data-screen='dungeon'] #stage-body,
+#stage[data-screen='battle'] #stage-body {
   justify-content: flex-end;
 }
 
@@ -285,7 +316,7 @@ button:active:not(:disabled) {
    収まりきらない項目は文字数を削るか (物理耐性→物理耐)、バッジ自体の幅を広げて対応する */
 .icons {
   position: absolute;
-  top: 30px;
+  top: 18px;
   bottom: 6px;
   display: flex;
   flex-direction: column;
@@ -332,11 +363,12 @@ button:active:not(:disabled) {
 }
 
 /* ---------------------------------------------------------------------- */
-/* メッセージログ。3〜4 行の固定高で、あふれた古い行は消える (スクロールさせない) */
-
+/* メッセージログ。固定高で、あふれた古い行は消える (スクロールさせない)。
+   戦闘のログは 1 ターンに複数行出る (味方の攻撃・敵の行動・状態変化) ので、
+   直近の流れが読めるだけの行数を確保する。防御をアイコン化して浮いた縦もここに回した */
 #log {
   flex: 0 0 auto;
-  height: 4.6em;
+  height: 8.2em;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -393,11 +425,13 @@ button:active:not(:disabled) {
   flex: 1 1 auto;
 }
 
+/* gap はキャラ枠グリッドの row-gap (4px) と揃える。ここが違うと上行・下行の境目が
+   キャラ枠の罫線からずれてしまう */
 #controls {
   flex: 0 0 92px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
 #controls button {
@@ -417,8 +451,9 @@ button:active:not(:disabled) {
 }
 
 /*
- * 戦闘の操作は押す頻度で 2 群に分ける。常用群 (ターン終了・防御) は毎ターン押すので
- * 大きく上に、臨時群 (回復薬・編成・逃げる) はたまにしか押さないので小さく下にまとめる。
+ * 操作は押す頻度で 2 群に分け、キャラ枠の行の高さにきっちり揃える。
+ * キャラ枠グリッドは 2 行とも同じ高さ (1fr 1fr) なので、上行 (常用群) と下行 (臨時群) も
+ * 1:1 で等分する。ここを 3:2 のような比率にすると、境目がキャラ枠の罫線からずれて雑然と見える。
  * #controls (id) より詳しくするため #controls を前に付けて、上の汎用ルールより優先させる
  */
 #controls .controls-primary,
@@ -427,14 +462,7 @@ button:active:not(:disabled) {
   flex-direction: column;
   gap: 4px;
   min-height: 0;
-}
-
-#controls .controls-primary {
-  flex: 3 1 0;
-}
-
-#controls .controls-secondary {
-  flex: 2 1 0;
+  flex: 1 1 0;
 }
 
 #controls .controls-primary button {
