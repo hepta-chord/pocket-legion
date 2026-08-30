@@ -618,7 +618,8 @@ v1 のプールは 14 人 (固定 2 + コモン 8 + レア 4) から始め、
 
 - TypeScript + Vite、フレームワーク無し、vitest、PWA (Service Worker)、GitHub Pages
 - game 層は入力 Action → 状態遷移 → ViewModel の純関数構成にして、描画を import しない
-- seed 付き乱数で出撃を再現可能にする
+- seed 付き乱数で出撃を再現可能にする。**seed は画面には出さない。**
+  プレイヤーが使う情報ではなく、ステータス欄の場所を取るだけである
 - localStorage に所持キャラ・金・進行を保存する。出撃中の中断・再開もセーブ対象にする
 
 ## ディレクトリ構成 (案)
