@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { CHARACTERS } from './data/characters';
+import { CHARACTERS, effectiveAttack } from './data/characters';
 import { generateCommon } from './data/common-gen';
 import { BOSS_ALT_EVENT, EVENTS } from './data/events';
 import { priceOf } from './data/pricing';
 import { newGame, step, toViewModel, type Action, type GameState } from './game';
 import { Rng } from './rng';
+import { factionMultiplierOf, factionTotals } from './roster';
 
 function fresh(): GameState {
   return newGame('TESTAA');
@@ -753,6 +754,39 @@ describe('ViewModel: 拠点の酒場と所持一覧', () => {
     expect(vm.screen.tavern[0].price).toBeGreaterThan(0);
     expect(vm.screen.roster.map((r) => r.id)).toEqual(['hero', 'mate']);
     expect(vm.screen.roster[0].rarity).toBe('rare');
+  });
+});
+
+describe('陣営倍率 (所持ベース) の表示', () => {
+  it('編成画面に陣営倍率が出て、同陣営を集めるほど上がる。カードの攻撃力も倍率込みの実効値になる', () => {
+    const state = fresh();
+    const mateEntry = state.owned.find((c) => c.id === 'mate')!;
+    const bareBefore = toViewModel(state);
+    if (bareBefore.screen.kind !== 'town') throw new Error('拠点ではない');
+    const orderBefore = bareBefore.screen.formation.factionMultipliers.find((f) => f.faction === 'order')!;
+    // 最初は mate (order) 1 人だけなので、mate 自身のカードには「自分以外」が誰もおらず倍率は 1
+    // (factionMultipliers の一覧値は自分を除かない集計なので、mate 自身のぶんだけ 1 より大きい)
+    const mateCardBefore = bareBefore.screen.roster.find((c) => c.id === 'mate')!;
+    expect(mateCardBefore.attack).toBe(effectiveAttack(mateEntry));
+
+    // mate と同じ陣営 (order) を追加でまとめて集める
+    const rng = new Rng(1);
+    state.owned.push(...[1, 2, 3, 4].map((i) => generateCommon('order', rng, i)));
+
+    const vm = toViewModel(state);
+    if (vm.screen.kind !== 'town') throw new Error('拠点ではない');
+    const order = vm.screen.formation.factionMultipliers.find((f) => f.faction === 'order')!;
+    expect(order.multiplier).toBeGreaterThan(orderBefore.multiplier);
+    // 他陣営 (kingdom) は誰も増やしていないので倍率は変わらない
+    const kingdom = vm.screen.formation.factionMultipliers.find((f) => f.faction === 'kingdom')!;
+    expect(kingdom.multiplier).toBe(1);
+
+    // カードの攻撃力は倍率を掛けた実効値になる (素の実効値より大きい)。
+    // 一覧の roster カードは「自分以外」で倍率を出すので、期待値もそれで計算する
+    const mateCard = vm.screen.roster.find((c) => c.id === 'mate')!;
+    expect(mateCard.attack).toBeGreaterThan(effectiveAttack(mateEntry));
+    const totals = factionTotals(state.owned);
+    expect(mateCard.attack).toBe(Math.round(effectiveAttack(mateEntry) * factionMultiplierOf(totals, mateEntry)));
   });
 });
 

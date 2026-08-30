@@ -3,11 +3,12 @@
 // マップを持たないので、状態は「今どの区画のどの深度にいるか」と
 // 「未解決のイベントがあるか」だけで足りる。座標も向きも持たない。
 
-import { partyMaxHp, type Fighter, type Party } from './battle';
+import { partyMaxHp, recalcVanguardBonus, type Fighter, type Party } from './battle';
 import { buildFighter, type CharacterEntry } from './data/characters';
 import { BOSS_ALT_EVENT, decideOccurrence, pickEvent, TOTAL_WEIGHT, type EventDef } from './data/events';
 import { sectorById, type Sector } from './data/sectors';
 import { partyFromRosterAndFormation, type Formation } from './formation';
+import { factionMultiplierOf, factionTotals } from './roster';
 import type { Rng } from './rng';
 
 export interface RunState {
@@ -98,13 +99,18 @@ export function isWiped(run: RunState): boolean {
  * 新しいキャラをその場でデッキ (出撃メンバー) に入れる。前衛に空きがあれば前衛、無ければ控え。
  * デッキは絞らないので控えの人数に上限は無く、常にデッキへ入る。
  * 新しい体力ぶん maxHp も伸ばす (元から居た扱いの復帰 (reviveDowned) とは違い、
- * こちらは編成そのものが増えるため)
+ * こちらは編成そのものが増えるため)。
+ * owned (この時点の所持キャラ全員。呼び出し側は entry を積んだ後に渡す) から
+ * 陣営倍率を出して Fighter.attack/vitality に焼き込む
  */
-export function addToDeck(run: RunState, entry: CharacterEntry): void {
-  const fighter = buildFighter(entry);
+export function addToDeck(run: RunState, entry: CharacterEntry, owned: readonly CharacterEntry[]): void {
+  const totals = factionTotals(owned);
+  const fighter = buildFighter(entry, factionMultiplierOf(totals, entry));
   const idx = run.party.front.findIndex((f) => f === null);
   if (idx >= 0) run.party.front[idx] = fighter;
   else run.party.reserve.push(fighter);
+  // 前衛の顔ぶれが変わりうるので同陣営補正 (battle.ts) も出し直してから maxHp を測る
+  recalcVanguardBonus(run.party);
   run.maxHp = partyMaxHp(run.party);
 }
 
@@ -120,5 +126,7 @@ export function reviveDowned(run: RunState): number {
     if (idx >= 0) run.party.front[idx] = f;
     else run.party.reserve.push(f);
   }
+  // 前衛の顔ぶれが変わりうるので同陣営補正を出し直す
+  if (revived.length > 0) recalcVanguardBonus(run.party);
   return revived.length;
 }

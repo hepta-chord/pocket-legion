@@ -273,16 +273,23 @@ export const CHARACTERS: readonly CharacterEntry[] = [
   },
 ];
 
-export function buildFighter(entry: CharacterEntry): Fighter {
+/**
+ * factionMul は所持ベースの陣営倍率 (roster.ts の factionMultiplierOf)。省略時は 1 倍
+ * (テストや、まだ所持と紐付いていない簡易な呼び出しのための既定値)。
+ * 戦闘中に変わらない値なのでここで Fighter.attack/vitality に直接焼き込む。
+ * 前衛の同陣営補正 (vanguardMul) は別物で、戦闘の中で変わるので焼き込まず battle.ts 側に持つ
+ */
+export function buildFighter(entry: CharacterEntry, factionMul = 1): Fighter {
   return {
     id: entry.id,
     name: entry.name,
     faction: entry.faction,
-    attack: effectiveAttack(entry),
-    vitality: effectiveVitality(entry),
+    attack: Math.round(effectiveAttack(entry) * factionMul),
+    vitality: Math.round(effectiveVitality(entry) * factionMul),
     skills: entry.skills.map(makeSkillState),
     passives: entry.passives,
     downed: false,
     stunnedUntil: 0,
+    vanguardMul: 1,
   };
 }

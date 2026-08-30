@@ -10,7 +10,14 @@
 // 上げていく過程そのものはここでは再現しない (計測は「その戦力なら勝てるか」を見るためで、
 // 数値の調整は計画側がまとめて行う)。
 //
-// まだ入っていないもの: 陣営倍率、前衛の同陣営補正、治療薬以外のアイテム、
+// 所持ベースの陣営倍率 (roster.ts) はレベルと違い所持人数で決まるので、レベルだけ振っても
+// 中盤以降の実態と合わない。出撃前に区画ごとの想定所持人数も振り、陣営の人口比と雇用上限に
+// 沿って生成した owned から倍率を出す (docs/batch-faction.md 4 節)。
+//
+// 前衛の同陣営補正は battle.ts 側 (startBattle/swapMembers/downSlot) が前衛の顔ぶれから
+// 自動で出し直すので、ここで別途は測らない (recruit で入った顔ぶれ次第でそのまま乗る)。
+//
+// まだ入っていないもの: 治療薬以外のアイテム、
 // treasure/nothing (罠が隠れている) の抽選そのもの (金と HP は測定対象に含めていない)。
 // ここの数字は骨格の健全性 (詰み方・戦術の偏り) を見るためのもので、最終調整ではない。
 
@@ -34,17 +41,49 @@ import {
 import { buildFighter, CHARACTERS, withLevel, type CharacterEntry } from '../data/characters';
 import { generateCommon } from '../data/common-gen';
 import { makeBoss, makeFoe } from '../data/enemies';
-import { FACTIONS } from '../data/factions';
+import { FACTION_HIRE_CAP, FACTION_WEIGHT, FACTIONS, type Faction } from '../data/factions';
 import { Rng } from '../rng';
+import { factionMultiplier, factionMultiplierOf, factionTotals, type FactionTotals } from '../roster';
 
 /** コモンの id (`common-N`) に振る通し番号。生成の結果には影響しない */
 let simCommonSerial = 1;
 
+/** 雇用上限に達していない陣営の中から、人口比の重みで 1 つ選ぶ (game.ts の weightedFaction の簡易版) */
+function weightedAvailableFaction(rng: Rng, counts: Record<Faction, number>): Faction {
+  const pool = FACTIONS.filter((f) => counts[f] < FACTION_HIRE_CAP[f]);
+  const usable = pool.length > 0 ? pool : FACTIONS;
+  const total = usable.reduce((sum, f) => sum + FACTION_WEIGHT[f], 0);
+  let roll = rng.next() * total;
+  for (const f of usable) {
+    roll -= FACTION_WEIGHT[f];
+    if (roll < 0) return f;
+  }
+  return usable[usable.length - 1];
+}
+
+/**
+ * 想定の所持人数ぶん、陣営の人口比と雇用上限に沿ってコモンを生成する (docs/batch-faction.md 4 節)。
+ * hero/mate は雇用上限に数えない例外なので、この生成には含めない (呼び出し側が別に足す)
+ */
+function generateAssumedOwned(rng: Rng, assumedLevel: number, count: number): CharacterEntry[] {
+  const counts: Record<Faction, number> = { kingdom: 0, order: 0, mercs: 0, frontier: 0 };
+  const out: CharacterEntry[] = [];
+  for (let i = 0; i < count; i++) {
+    const faction = weightedAvailableFaction(rng, counts);
+    counts[faction] += 1;
+    out.push(withLevel(generateCommon(faction, rng, simCommonSerial++), assumedLevel));
+  }
+  return out;
+}
+
 /** ダンジョン内の加入イベント (recruit) の簡略版。コモンを 1 人その場で生成してデッキに足す。
- * 区画の想定レベルに合わせておく (でないと後半の連戦で level 1 の丸腰が混ざってしまう) */
-function addRecruit(party: Party, rng: Rng, assumedLevel: number): void {
-  const picked = withLevel(generateCommon(rng.pick(FACTIONS), rng, simCommonSerial++), assumedLevel);
-  const fighter = buildFighter(picked);
+ * 区画の想定レベルに合わせておく (でないと後半の連戦で level 1 の丸腰が混ざってしまう)。
+ * 陣営倍率は出撃開始時点の想定所持 (initialTotals) を土台にした近似値を掛ける
+ * (加入のたびに全所持を数え直すほどの精度は測定には要らない) */
+function addRecruit(party: Party, rng: Rng, assumedLevel: number, initialTotals: FactionTotals): void {
+  const faction = rng.pick(FACTIONS);
+  const picked = withLevel(generateCommon(faction, rng, simCommonSerial++), assumedLevel);
+  const fighter = buildFighter(picked, factionMultiplier(initialTotals, faction));
   const idx = party.front.findIndex((f) => f === null);
   if (idx >= 0) party.front[idx] = fighter;
   else party.reserve.push(fighter);
@@ -183,18 +222,30 @@ const BOSS_TURN_CAP = 200;
  * @param assumedLevel 出撃前に全員へ振る「想定レベル」。区画ごとに決め打ちで測る
  * (浅層 1、中層 10、深層 20 など。docs/batch-growth.md 7 節)。CHARACTERS は共有オブジェクトなので、
  * withLevel で独立したコピーを作ってからレベルを振る (他の測定・他のプレイへ漏れないように)
+ * @param assumedOwnedCount 出撃前に持たせる想定の所持人数 (hero/mate を含む)。所持ベースの陣営倍率
+ * (roster.ts) は所持人数で決まるので、レベルだけ振っても中盤以降の実態と合わない
+ * (docs/batch-faction.md 4 節。浅層 5・中層 12・深層 20 が初期値)
  */
-export function playSortie(sectorId: number, startDepth: number, rng: Rng, assumedLevel: number): SortieResult {
-  // 出撃開始時: hero + mate + コモン 3 人 (酒場の代わり。陣営はランダムに引く)
+export function playSortie(
+  sectorId: number,
+  startDepth: number,
+  rng: Rng,
+  assumedLevel: number,
+  assumedOwnedCount: number,
+): SortieResult {
+  // 出撃開始時: hero + mate + 想定所持人数ぶんのコモン (酒場・道中の加入をまとめて先取りした形。
+  // 陣営は人口比の重みで、雇用上限に沿って生成する)
   const hero = withLevel(CHARACTERS.find((c) => c.id === 'hero')!, assumedLevel);
   const mate = withLevel(CHARACTERS.find((c) => c.id === 'mate')!, assumedLevel);
-  const startCommons = [0, 1, 2].map(() =>
-    withLevel(generateCommon(rng.pick(FACTIONS), rng, simCommonSerial++), assumedLevel),
-  );
+  const startCommons = generateAssumedOwned(rng, assumedLevel, Math.max(0, assumedOwnedCount - 2));
   // レアは有限 (4 人) なので、ボス前の分岐で引いた分だけ所持 id を追う
   const ownedRareIds = new Set<string>();
   const initial: CharacterEntry[] = [hero, mate, ...startCommons];
-  const party: Party = newParty(initial.map(buildFighter), []);
+  // 所持ベースの陣営倍率は出撃時に一度だけ確定させる。以降の recruit・レア加入も
+  // この時点の合算 (initialTotals) を近似の土台にする (加入のたびに数え直すほどの精度は測定に要らない)
+  const initialTotals = factionTotals(initial);
+  const fighters = initial.map((c) => buildFighter(c, factionMultiplierOf(initialTotals, c)));
+  const party: Party = newParty(fighters.slice(0, 6), fighters.slice(6));
   let maxHp = partyMaxHp(party);
   let hp = maxHp;
 
@@ -214,7 +265,7 @@ export function playSortie(sectorId: number, startDepth: number, rng: Rng, assum
     const depth = startDepth + step * 2;
 
     // 泉のリセットと recruit のデッキ加入を、区間ごとの近似確率で反映する
-    if (rng.chance(RECRUIT_CHANCE_PER_STEP)) addRecruit(party, rng, assumedLevel);
+    if (rng.chance(RECRUIT_CHANCE_PER_STEP)) addRecruit(party, rng, assumedLevel, initialTotals);
     if (rng.chance(SPRING_CHANCE_PER_STEP)) {
       hp = Math.min(maxHp, hp + Math.round(maxHp * 0.5));
       resetSortieProgress(party);
@@ -251,7 +302,7 @@ export function playSortie(sectorId: number, startDepth: number, rng: Rng, assum
     if (rareCandidates.length > 0) {
       const picked = withLevel(rng.pick(rareCandidates), assumedLevel);
       ownedRareIds.add(picked.id);
-      const fighter = buildFighter(picked);
+      const fighter = buildFighter(picked, factionMultiplier(initialTotals, picked.faction));
       const idx = party.front.findIndex((f) => f === null);
       if (idx >= 0) party.front[idx] = fighter;
       else party.reserve.push(fighter);
@@ -299,7 +350,10 @@ export interface SectorReport {
   avgBossTurns: number;
 }
 
-/** @param assumedLevel 出撃前に全員へ振る想定レベル (docs/batch-growth.md 7 節)。区画ごとに呼び出し側が決める */
+/**
+ * @param assumedLevel 出撃前に全員へ振る想定レベル (docs/batch-growth.md 7 節)。区画ごとに呼び出し側が決める
+ * @param assumedOwnedCount 出撃前に持たせる想定の所持人数 (docs/batch-faction.md 4 節)。区画ごとに呼び出し側が決める
+ */
 export function measure(
   label: string,
   sectorId: number,
@@ -307,6 +361,7 @@ export function measure(
   sorties: number,
   seed: number,
   assumedLevel: number,
+  assumedOwnedCount: number,
 ): SectorReport {
   const rng = new Rng(seed);
   let wins = 0;
@@ -320,7 +375,7 @@ export function measure(
   let bossWins = 0;
   let bossTurns = 0;
   for (let i = 0; i < sorties; i++) {
-    const r = playSortie(sectorId, startDepth, rng, assumedLevel);
+    const r = playSortie(sectorId, startDepth, rng, assumedLevel, assumedOwnedCount);
     // 雑魚で倒れた出撃はボスに挑めていないので、ボスの平均から外す
     if (r.bossTurns > 0) {
       bossTries += 1;

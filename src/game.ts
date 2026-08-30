@@ -8,6 +8,8 @@ import {
   DEFENSE_COST,
   DEFENSE_MAX,
   effectiveCost,
+  effectiveFighterAttack,
+  effectiveFighterVitality,
   endTurn,
   logBattle,
   MANA_CAP,
@@ -53,6 +55,7 @@ import {
   type Formation,
 } from './formation';
 import { hashSeed, Rng } from './rng';
+import { factionMultiplier, factionMultiplierOf, factionTotals, type FactionTotals } from './roster';
 import {
   addToDeck,
   advance,
@@ -421,7 +424,7 @@ function resolveBossAltRare(state: GameState, run: RunState, rng: Rng): string {
   if (candidates.length === 0) return resolveBossAltHeal(run);
   const picked = instantiate(rng.pick(candidates));
   state.owned.push(picked);
-  addToDeck(run, picked);
+  addToDeck(run, picked, state.owned);
   return `${picked.name} が仲間になった。`;
 }
 
@@ -435,7 +438,7 @@ function resolveRecruit(state: GameState, run: RunState, rng: Rng): string {
   const faction = rng.pick(available.length > 0 ? available : FACTIONS);
   const picked = generateCommon(faction, rng, state.nextCommonId++);
   state.owned.push(picked);
-  addToDeck(run, picked);
+  addToDeck(run, picked, state.owned);
   return `${picked.name} が仲間になった。`;
 }
 
@@ -948,17 +951,18 @@ function toBattleView(b: BattleState, potions: number, owned: readonly Character
 /**
  * CharacterEntry (固定定義かその場で生成した個体) をカードにする。酒場・所持一覧・編成の
  * 候補一覧すべてで使う。一覧行の要約 (名前・陣営・レアリティ・攻撃力・体力) と、
- * タップして開く詳細 (スキル・パッシブの効果) を両方含める
+ * タップして開く詳細 (スキル・パッシブの効果) を両方含める。
+ * mul (陣営倍率) を掛けた実効値にする。素の値では編成・雇用の判断に使えない
  */
-function characterCard(entry: CharacterEntry): FormationCharacterView {
+function characterCard(entry: CharacterEntry, mul: number): FormationCharacterView {
   return {
     id: entry.id,
     name: entry.name,
     faction: FACTION_NAMES[entry.faction],
     skills: skillLabels(entry),
     rarity: entry.rarity,
-    attack: effectiveAttack(entry),
-    vitality: effectiveVitality(entry),
+    attack: Math.round(effectiveAttack(entry) * mul),
+    vitality: Math.round(effectiveVitality(entry) * mul),
     level: entry.level,
     maxLevel: entry.maxLevel,
     skillDetails: entry.skills.map(skillDetailOf),
@@ -970,7 +974,8 @@ function characterCard(entry: CharacterEntry): FormationCharacterView {
  * 出撃済みの Fighter を characterCard と同じ形のカードにする (ダンジョン内の編成・交代ピッカー用)。
  * レアリティ・レベル・レベル上限は owned (所持キャラそのもの) から引く。生成コモンも所持した個体を
  * そのまま owned に積んでいるので、CHARACTERS (固定定義) を見なくても owned だけで引ける。
- * attack/vitality は Fighter が戦闘開始時に固定した実効値をそのまま出す
+ * attack/vitality は陣営倍率 (Fighter.attack/vitality に焼き込み済み) と前衛補正 (vanguardMul) の
+ * 両方を掛けた実効値にする。素の値では編成・交代の判断に使えない
  * (growth/curve は owned 側にしか無いマスクパラメータなので、ここにも出てこない)
  */
 function fighterCard(f: Fighter, owned: readonly CharacterEntry[]): FormationCharacterView {
@@ -981,8 +986,8 @@ function fighterCard(f: Fighter, owned: readonly CharacterEntry[]): FormationCha
     faction: FACTION_NAMES[f.faction],
     skills: [...f.skills.map((s) => s.def.name), ...f.passives.map((p) => p.name)],
     rarity: entry?.rarity ?? 'common',
-    attack: f.attack,
-    vitality: f.vitality,
+    attack: effectiveFighterAttack(f),
+    vitality: effectiveFighterVitality(f),
     level: entry?.level ?? 1,
     maxLevel: entry?.maxLevel ?? 1,
     skillDetails: f.skills.map((s) => skillDetailOf(s.def)),
@@ -991,11 +996,15 @@ function fighterCard(f: Fighter, owned: readonly CharacterEntry[]): FormationCha
 }
 
 /** id の列 (前衛 6 枠) を編成カードの並びにする */
-function toFormationSlots(owned: readonly CharacterEntry[], formation: readonly (string | null)[]): FormationSlotView[] {
+function toFormationSlots(
+  owned: readonly CharacterEntry[],
+  formation: readonly (string | null)[],
+  totals: FactionTotals,
+): FormationSlotView[] {
   return formation.map((id) => {
     if (!id) return { character: null };
     const entry = owned.find((c) => c.id === id);
-    return { character: entry ? characterCard(entry) : null };
+    return { character: entry ? characterCard(entry, factionMultiplierOf(totals, entry)) : null };
   });
 }
 
@@ -1051,13 +1060,22 @@ function toTownView(state: GameState): TownView {
     state.formation,
     state.formationTouched,
   );
+  // 所持ベースの陣営倍率 (roster.ts)。owned に対する合算を先に 1 回だけ出し、
+  // 個々のカードはここから自分のぶんを引いた倍率を使う (factionMultiplierOf)
+  const totals = factionTotals(state.owned);
   const formation: FormationEditorView = {
-    slots: toFormationSlots(state.owned, resolved),
+    slots: toFormationSlots(state.owned, resolved, totals),
     auto: !state.formationTouched,
     roster: state.owned.map((entry) => {
       const idx = resolved.indexOf(entry.id);
-      return { ...characterCard(entry), placedSlot: idx >= 0 ? idx : null };
+      return { ...characterCard(entry, factionMultiplierOf(totals, entry)), placedSlot: idx >= 0 ? idx : null };
     }),
+    // 何を集めると何が伸びるかを見せる (「王国 x1.32」のような形)。集める動機そのものになる
+    factionMultipliers: FACTIONS.map((faction) => ({
+      faction,
+      name: FACTION_NAMES[faction],
+      multiplier: factionMultiplier(totals, faction),
+    })),
   };
 
   return {
@@ -1074,33 +1092,35 @@ function toTownView(state: GameState): TownView {
     })),
     tavern: state.tavern.map((entry) => {
       const price = priceOf(entry);
-      return { ...characterCard(entry), price, affordable: state.gold >= price };
+      // 酒場の面々はまだ所持していないので「自分のぶんを引く」必要が無い (selfContribution 省略)。
+      // 今の所持だけを土台にした、雇ったらどうなるかの見積もりになる
+      return { ...characterCard(entry, factionMultiplier(totals, entry.faction)), price, affordable: state.gold >= price };
     }),
     rerollCost: state.tavernRerollCost,
     rerollAffordable: state.gold >= state.tavernRerollCost,
-    roster: state.owned.map(characterCard),
+    roster: state.owned.map((entry) => characterCard(entry, factionMultiplierOf(totals, entry))),
     formation,
   };
 }
 
 export function toViewModel(state: GameState): ViewModel {
   if (state.result) {
-    return { screen: { kind: 'result', ...state.result }, log: [...state.log], seed: state.seed };
+    return { screen: { kind: 'result', ...state.result }, log: [...state.log] };
   }
 
   if (state.battle) {
     // 戦闘中は本編ログの末尾に battle.log をつないで、直近の場面が読めるようにする。
     // 本編ログそのものへは決着時 (settleBattle) にまとめて移すので、ここでは二重に積まない
     const log = [...state.log, ...state.battle.log].slice(-LOG_LIMIT);
-    return { screen: toBattleView(state.battle, state.potions, state.owned), log, seed: state.seed };
+    return { screen: toBattleView(state.battle, state.potions, state.owned), log };
   }
 
   const log = [...state.log];
 
   const run = state.run;
   if (run) {
-    return { screen: toDungeonView(run, state.potions, state.owned), log, seed: state.seed };
+    return { screen: toDungeonView(run, state.potions, state.owned), log };
   }
 
-  return { screen: toTownView(state), log, seed: state.seed };
+  return { screen: toTownView(state), log };
 }

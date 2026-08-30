@@ -210,7 +210,8 @@ function renderStatus(vm: ViewModel): void {
     status.append(hpRow);
     status.append(statusSpan(`${s.sectorName} 深度 ${s.depth}/${s.goal}`));
   } else if (s.kind === 'town') {
-    status.append(statusSpan(`所持金 ${s.gold} G`), statusSpan(`回復薬 ${s.potions}`), statusSpan(`seed ${vm.seed}`));
+    // seed はプレイヤーが使う情報ではない (乱数の再現に使う内部値) ので表示しない
+    status.append(statusSpan(`所持金 ${s.gold} G`), statusSpan(`回復薬 ${s.potions}`));
   } else {
     status.append(statusSpan(s.won ? '帰還' : '全滅'));
   }
@@ -353,6 +354,13 @@ function renderFormationStage(s: TownView): void {
     ? '未設定なので、所持キャラの先頭から自動で詰めている。スロットをタップして選び直せる。'
     : '控えは前衛に選ばれなかった所持キャラ全員が自動で務める。スロットをタップして入れ替える。';
   stageBody.append(note);
+
+  // 所持ベースの陣営倍率。何を集めると何が伸びるかが見えないと集める動機が生まれない
+  // (docs/plan.md「ステータスと陣営倍率」)
+  const mul = document.createElement('p');
+  mul.className = 'body';
+  mul.textContent = s.formation.factionMultipliers.map((f) => `${f.name} x${f.multiplier.toFixed(2)}`).join(' ・ ');
+  stageBody.append(mul);
 }
 
 /**
