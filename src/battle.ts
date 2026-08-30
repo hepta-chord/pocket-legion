@@ -177,8 +177,15 @@ export interface EnemyDef {
   /** ダウン攻撃の間隔 (ターン)。null なら持たない。防御・ward では防げず、バリアと身代わりだけが対抗手段 */
   downEvery: number | null;
   /**
-   * 大技・ダウン攻撃以外の「通常行動」の候補。雑魚は毎ターンここから 1 回、
-   * ボスは大技・ダウン攻撃のターン以外は 2 回引く (attack / stun / cheer / ward)
+   * スタンを撃つ間隔 (ターン)。null なら持たない。大技・ダウン攻撃と同じクールタイム制で、
+   * 行動パターンの抽選には乗せない (乗せると頻度が数字で決められず、確率任せで高くなりすぎるため)
+   */
+  stunEvery: number | null;
+  /** スタンが巻き込む人数の範囲。stunEvery を持つ敵だけが使う */
+  stunRange: { min: number; max: number };
+  /**
+   * 大技・ダウン攻撃・スタン以外の「通常行動」の候補。雑魚は毎ターンここから 1 回、
+   * ボスは大技・ダウン攻撃・スタンのターン以外は 2 回引く (attack / cheer / ward)
    */
   pattern: EnemyAction[];
   /**
@@ -196,6 +203,8 @@ export interface EnemyState {
   bigCountdown: number;
   /** ダウン攻撃まであと何ターンか。持たない敵は null */
   downCountdown: number | null;
+  /** スタンまであと何ターンか。持たない敵は null */
+  stunCountdown: number | null;
   /** 敵の自己鼓舞・自己防御。プレイヤー側の鼓舞・ward と同じ骨格 */
   cheer: BuffStack;
   ward: BuffStack;
@@ -304,6 +313,7 @@ export function startBattle(party: Party, hp: number, maxHp: number, enemyDef: E
     hp: enemyDef.maxHp,
     bigCountdown: Math.max(1, enemyDef.bigEvery + telegraph),
     downCountdown: enemyDef.downEvery !== null ? Math.max(1, enemyDef.downEvery + telegraph) : null,
+    stunCountdown: enemyDef.stunEvery !== null ? Math.max(1, enemyDef.stunEvery + telegraph) : null,
     cheer: emptyBuffStack(),
     ward: emptyBuffStack(),
     nextActions: [],
@@ -627,7 +637,7 @@ function doDownstrike(state: BattleState, enemy: EnemyState, rng: Rng): void {
 }
 
 /**
- * 大技・ダウン攻撃以外の通常行動を 1 回分適用する。
+ * 大技・ダウン攻撃・スタン以外の通常行動を 1 回分適用する。
  * action は「次ターンの予告」として 1 ターン前に引いておいた値をそのまま渡す
  * (ここで新たに rng.pick すると、予告と実際の行動がずれてしまう)
  */
@@ -645,20 +655,6 @@ function applyNormalAction(state: BattleState, enemy: EnemyState, action: EnemyA
       addLog(state, 'bad', `${enemy.def.name} の攻撃。${dmg} 受けた。`);
       return;
     }
-    case 'stun': {
-      const occupied = occupiedSlots(state.party);
-      const count = Math.min(occupied.length, rng.int(action.min, action.max));
-      const targets = pickDistinct(occupied, count, rng);
-      const names: string[] = [];
-      for (const slot of targets) {
-        const f = state.party.front[slot];
-        if (!f) continue;
-        f.stunnedUntil = Math.max(f.stunnedUntil, state.turn + 1);
-        names.push(f.name);
-      }
-      if (names.length > 0) addLog(state, 'warn', `${enemy.def.name} のスタン。${names.join('・')} が気絶した。`);
-      return;
-    }
     case 'cheer':
       addBuffStack(enemy.cheer, 1);
       addLog(state, 'warn', `${enemy.def.name} が自らを鼓舞した。`);
@@ -669,21 +665,44 @@ function applyNormalAction(state: BattleState, enemy: EnemyState, action: EnemyA
       return;
     case 'big':
     case 'downstrike':
-      // pattern (通常行動の候補) には入れない値。ここに来ることは無いが型のための保険
+    case 'stun':
+      // pattern (通常行動の候補) には入れない値。大技・ダウン攻撃・スタンは
+      // それぞれ専用のクールタイムから直接呼ばれる (doBig/doDownstrike/doStun)。
+      // ここに来ることは無いが型のための保険
       return;
   }
 }
 
+/** スタン。防御・ward は効かない代わりに、大技・ダウン攻撃と同じくバリアの対象にはしない
+ * (バリアは「攻撃」を防ぐ札という位置づけのまま変えていない。行動パターンの抽選には乗せず、
+ * stunEvery のクールタイムからだけ呼ばれる) */
+function doStun(state: BattleState, enemy: EnemyState, rng: Rng): void {
+  const range = enemy.def.stunRange;
+  const occupied = occupiedSlots(state.party);
+  const count = Math.min(occupied.length, rng.int(range.min, range.max));
+  const targets = pickDistinct(occupied, count, rng);
+  const names: string[] = [];
+  for (const slot of targets) {
+    const f = state.party.front[slot];
+    if (!f) continue;
+    f.stunnedUntil = Math.max(f.stunnedUntil, state.turn + 1);
+    names.push(f.name);
+  }
+  if (names.length > 0) addLog(state, 'warn', `${enemy.def.name} のスタン。${names.join('・')} が気絶した。`);
+}
+
 /**
- * 次ターンに取る行動を引く。bigCountdown / downCountdown は「あと 1」で次ターンに発動する
- * (resolveEnemyTurn が毎ターン先頭で 1 減らしてから判定するのと同じしきい値)。
- * 大技・ダウン攻撃のターンは要素 1 つ、それ以外は通常行動 (attack/stun/cheer/ward) を
- * 雑魚 1 回・ボス 2 回ぶん引く。これを実行の 1 ターン前に済ませておくことで、
- * 予告表示と実際の行動を一致させる (乱数の消費順は変わるが、ルールの結果は変えない)
+ * 次ターンに取る行動を引く。bigCountdown / downCountdown / stunCountdown は「あと 1」で
+ * 次ターンに発動する (resolveEnemyTurn が毎ターン先頭で 1 減らしてから判定するのと同じしきい値)。
+ * 優先順位は大技 > ダウン攻撃 > スタンで、重なったら 1 つだけ引く (resolveEnemyTurn と揃える)。
+ * どの特殊行動のターンでもなければ、通常行動 (attack/cheer/ward) を雑魚 1 回・ボス 2 回ぶん引く。
+ * これを実行の 1 ターン前に済ませておくことで、予告表示と実際の行動を一致させる
+ * (乱数の消費順は変わるが、ルールの結果は変えない)
  */
 function rollNextActions(enemy: EnemyState, rng: Rng): EnemyAction[] {
   if (enemy.bigCountdown <= 1) return [{ kind: 'big' }];
   if (enemy.downCountdown !== null && enemy.downCountdown <= 1) return [{ kind: 'downstrike' }];
+  if (enemy.stunCountdown !== null && enemy.stunCountdown <= 1) return [{ kind: 'stun', ...enemy.def.stunRange }];
   const times = enemy.def.isBoss ? 2 : 1;
   const pattern = enemy.def.pattern.length > 0 ? enemy.def.pattern : ([{ kind: 'attack' }] as EnemyAction[]);
   const actions: EnemyAction[] = [];
@@ -692,8 +711,10 @@ function rollNextActions(enemy: EnemyState, rng: Rng): EnemyAction[] {
 }
 
 /**
- * 敵の 1 ターンぶんの行動。大技・ダウン攻撃はそれぞれ別のカウントダウンで管理し、
- * どちらのターンでもなければ、1 ターン前に引いておいた nextActions (通常行動) を実行する。
+ * 敵の 1 ターンぶんの行動。大技・ダウン攻撃・スタンはそれぞれ別のカウントダウンで管理し、
+ * 大技 > ダウン攻撃 > スタンの順で 1 つだけ発動する (重なったターンは残りをそのまま持ち越す。
+ * 下位のカウントダウンは、上位が発動したターンには一切減らさない)。
+ * どれでもなければ、1 ターン前に引いておいた nextActions (通常行動) を実行する。
  * 最後に次ターンぶんの nextActions を引き直し、予告を更新する。
  */
 function resolveEnemyTurn(state: BattleState, enemy: EnemyState, rng: Rng): void {
@@ -710,6 +731,16 @@ function resolveEnemyTurn(state: BattleState, enemy: EnemyState, rng: Rng): void
     if (enemy.downCountdown <= 0) {
       doDownstrike(state, enemy, rng);
       enemy.downCountdown = enemy.def.downEvery ?? enemy.def.bigEvery;
+      enemy.nextActions = rollNextActions(enemy, rng);
+      return;
+    }
+  }
+
+  if (enemy.stunCountdown !== null) {
+    enemy.stunCountdown -= 1;
+    if (enemy.stunCountdown <= 0) {
+      doStun(state, enemy, rng);
+      enemy.stunCountdown = enemy.def.stunEvery ?? enemy.def.bigEvery;
       enemy.nextActions = rollNextActions(enemy, rng);
       return;
     }
