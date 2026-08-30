@@ -123,7 +123,10 @@ export const CHARACTERS: readonly CharacterEntry[] = [
   {
     id: 'hero',
     name: '主人公',
-    faction: 'kingdom',
+    // 辺境に置く。0 コストの斬撃と必殺という構成が辺境の得意系統 (必殺と代償) に合い、
+    // 人口の最も少ない陣営なので、陣営倍率を主人公の側から伸ばすのが難しくなる。
+    // レベル上限が無い代わりに倍率で伸びにくい、という釣り合いになる
+    faction: 'frontier',
     rarity: 'rare',
     price: 400,
     attack: 120,
