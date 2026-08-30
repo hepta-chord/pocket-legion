@@ -1,4 +1,8 @@
-// 疑似 3D の通路をアスキーで組み立てる。
+// 疑似 3D の通路を文字で組み立てる。
+//
+// 線には罫線素片 (─ │ ╲ ╱) を使う。`-` や `|` は字形が字送りより細く、
+// 並べると字の間に隙間が空いて線が途切れて見える (高解像度ほど目立つ)。
+// 罫線素片は隣の字とつながるように設計されているので、線が線として読める。
 //
 // マップを持たないので、ここに描くものはゲーム状態ではない。
 // 「進んでいる感じ」を出すためだけの飾りである。
@@ -39,12 +43,12 @@ export function corridorLines(depth: number): string[] {
     if (halfX < 3.5 || halfY < 2) break;
 
     for (let x = left; x <= right; x++) {
-      rows[top][x] = '-';
-      rows[bottom][x] = '-';
+      rows[top][x] = '─';
+      rows[bottom][x] = '─';
     }
     for (let y = top; y <= bottom; y++) {
-      rows[y][left] = '|';
-      rows[y][right] = '|';
+      rows[y][left] = '│';
+      rows[y][right] = '│';
     }
     inner = { left, right, top, bottom };
   }
@@ -66,10 +70,10 @@ function drawCorners(
   inner: { left: number; right: number; top: number; bottom: number },
 ): void {
   const corners = [
-    { x: 0, y: 0, ch: '\\' },
-    { x: WIDTH - 1, y: 0, ch: '/' },
-    { x: 0, y: HEIGHT - 1, ch: '/' },
-    { x: WIDTH - 1, y: HEIGHT - 1, ch: '\\' },
+    { x: 0, y: 0, ch: '╲' },
+    { x: WIDTH - 1, y: 0, ch: '╱' },
+    { x: 0, y: HEIGHT - 1, ch: '╱' },
+    { x: WIDTH - 1, y: HEIGHT - 1, ch: '╲' },
   ];
   for (const c of corners) {
     const dx = cx - c.x;

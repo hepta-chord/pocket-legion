@@ -6,6 +6,8 @@ import type { ViewModel } from '../view';
  * どう変わっても通路の絵の形そのものは崩れないようにするための固定値 */
 const CHAR_ASPECT = 0.6;
 
+const FONT_STACK = 'ui-monospace, SFMono-Regular, Menlo, monospace';
+
 /**
  * Canvas に文字グリッドで描く。
  * 描くのはダンジョンの通路だけで、拠点と結果の画面は DOM が受け持つ。
@@ -87,15 +89,29 @@ export class TextRenderer implements Renderer {
     this.cell = { w: cssW / CORRIDOR_SIZE.width, h: cssH / CORRIDOR_SIZE.height };
   }
 
+  /**
+   * セル幅にちょうど収まる字の大きさを求める。
+   *
+   * 字送りとセル幅がずれると、線の字が隣とつながらずに途切れて見える。
+   * 等幅の比率を決め打ちにするとフォントごとに外れるので、実際に測って合わせる。
+   */
+  private fontSizeForCell(): number {
+    const probe = 100;
+    this.ctx.font = `${probe}px ${FONT_STACK}`;
+    const advance = this.ctx.measureText('─').width || probe * CHAR_ASPECT;
+    return (this.cell.w / advance) * probe;
+  }
+
   draw(vm: ViewModel): void {
     this.lastVm = vm;
     const rect = this.canvas.getBoundingClientRect();
     this.ctx.clearRect(0, 0, rect.width, rect.height);
     if (vm.screen.kind !== 'dungeon') return;
 
-    const size = Math.min(this.cell.w * 1.6, this.cell.h);
-    this.ctx.font = `${size}px ui-monospace, SFMono-Regular, Menlo, monospace`;
-    this.ctx.textBaseline = 'top';
+    this.ctx.font = `${this.fontSizeForCell()}px ${FONT_STACK}`;
+    // セルの中央に置く。罫線素片は字の中央で隣とつながるので、左上に置くと縦がずれる
+    this.ctx.textAlign = 'center';
+    this.ctx.textBaseline = 'middle';
     this.ctx.fillStyle = '#5f7a8a';
 
     const lines = corridorLines(vm.screen.corridor);
@@ -103,7 +119,7 @@ export class TextRenderer implements Renderer {
       for (let x = 0; x < lines[y].length; x++) {
         const ch = lines[y][x];
         if (ch === ' ') continue;
-        this.ctx.fillText(ch, x * this.cell.w, y * this.cell.h);
+        this.ctx.fillText(ch, (x + 0.5) * this.cell.w, (y + 0.5) * this.cell.h);
       }
     }
   }
