@@ -32,10 +32,15 @@ export interface RunState {
   downed: Fighter[];
 }
 
-export function startRun(sectorId: number, roster: readonly string[], formation: Formation): RunState {
+export function startRun(
+  sectorId: number,
+  roster: readonly string[],
+  formation: Formation,
+  formationTouched?: boolean,
+): RunState {
   // 編成 (formation) は前衛 6 枠だけを決める。デッキは絞らないので、
   // 前衛に選ばれなかった roster 全員が控えになる (docs/plan.md「編成画面」)
-  const party = partyFromRosterAndFormation(roster, formation);
+  const party = partyFromRosterAndFormation(roster, formation, formationTouched);
   const maxHp = partyMaxHp(party);
   return {
     sectorId,

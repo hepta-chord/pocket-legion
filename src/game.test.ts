@@ -251,6 +251,39 @@ describe('ViewModel 経由の検証', () => {
   });
 });
 
+describe('大技 1 ターン前のアナウンス', () => {
+  it('countdown が 1 になったターンの終わりに警告ログが出る', () => {
+    const state = fresh();
+    step(state, { type: 'sortie', sectorId: 1 });
+    forceBattleEvent(state, 'battle');
+    step(state, { type: 'resolve' });
+    const b = state.battle!;
+    b.enemy.countdown = 2;
+
+    step(state, { type: 'battle-end-turn' });
+
+    expect(state.battle?.outcome).toBe('ongoing');
+    expect(state.battle?.enemy.countdown).toBe(1);
+    const vm = toViewModel(state);
+    expect(vm.log.some((l) => l.kind === 'warn' && l.text.includes('力を溜めている'))).toBe(true);
+  });
+
+  it('countdown が 1 以外のターンでは警告ログを出さない', () => {
+    const state = fresh();
+    step(state, { type: 'sortie', sectorId: 1 });
+    forceBattleEvent(state, 'battle');
+    step(state, { type: 'resolve' });
+    const b = state.battle!;
+    b.enemy.countdown = 5;
+
+    step(state, { type: 'battle-end-turn' });
+
+    expect(state.battle?.enemy.countdown).toBe(4);
+    const vm = toViewModel(state);
+    expect(vm.log.some((l) => l.text.includes('力を溜めている'))).toBe(false);
+  });
+});
+
 describe('初期状態', () => {
   it('roster は hero と mate だけ、所持金は 300、酒場にはコモン 3 人が並ぶ', () => {
     const state = fresh();
@@ -322,6 +355,54 @@ describe('出撃時のパーティ編成', () => {
     step(state, { type: 'sortie', sectorId: 1 });
     const front = state.run!.party.front;
     expect(front.some((f) => f?.id === id)).toBe(true);
+  });
+});
+
+describe('編成: 空にする / 全て外す', () => {
+  /** 自動詰めが前衛 6 枠を丸ごと埋めるだけの人数を roster に用意する */
+  function sixPersonRoster(state: GameState): void {
+    const commons = CHARACTERS.filter((c) => c.rarity === 'common')
+      .slice(0, 4)
+      .map((c) => c.id);
+    state.roster = ['hero', 'mate', ...commons];
+  }
+
+  it('未編集のまま 1 枠だけ空にしても、他の枠の自動詰めは残る (以前は全枠が空になる不具合があった)', () => {
+    const state = fresh();
+    sixPersonRoster(state);
+
+    const before = toViewModel(state);
+    if (before.screen.kind !== 'town') throw new Error('拠点画面ではない');
+    expect(before.screen.formation.auto).toBe(true);
+    const beforeIds = before.screen.formation.slots.map((s) => s.character?.id ?? null);
+    expect(beforeIds.filter((id) => id !== null)).toHaveLength(6);
+
+    step(state, { type: 'formation-set', slot: 0, id: null });
+
+    const after = toViewModel(state);
+    if (after.screen.kind !== 'town') throw new Error('拠点画面ではない');
+    expect(after.screen.formation.auto).toBe(false);
+    const afterIds = after.screen.formation.slots.map((s) => s.character?.id ?? null);
+    expect(afterIds[0]).toBeNull();
+    // 触っていない残り 5 枠は、自動詰めが見せていたキャラのまま変わらないこと
+    expect(afterIds.slice(1)).toEqual(beforeIds.slice(1));
+    expect(afterIds.slice(1).every((id) => id !== null)).toBe(true);
+  });
+
+  it('「全て外す」は前衛 6 枠を実際に空にし、自動詰めへは戻らない (出撃時も空のまま)', () => {
+    const state = fresh();
+    sixPersonRoster(state);
+
+    step(state, { type: 'formation-clear-all' });
+
+    const vm = toViewModel(state);
+    if (vm.screen.kind !== 'town') throw new Error('拠点画面ではない');
+    expect(vm.screen.formation.auto).toBe(false);
+    expect(vm.screen.formation.slots.every((s) => s.character === null)).toBe(true);
+
+    step(state, { type: 'sortie', sectorId: 1 });
+    expect(state.run?.party.front.every((f) => f === null)).toBe(true);
+    expect(state.run?.party.reserve).toHaveLength(state.roster.length);
   });
 });
 

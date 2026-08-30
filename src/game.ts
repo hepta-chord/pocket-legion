@@ -8,6 +8,7 @@ import {
   endTurn,
   GUARD_COST,
   GUARD_MAX,
+  logBattle,
   MANA_CAP,
   refillFront,
   resetSortieProgress,
@@ -28,8 +29,8 @@ import { makeBoss, makeFoe } from './data/enemies';
 import { SECTORS, sectorById } from './data/sectors';
 import type { ActionSkillDef, PassiveDef, SkillCategory } from './data/skills';
 import {
+  autoFillFormation,
   emptyFormation,
-  isFormationUnset,
   placeInFormation,
   resolveFormation,
   setFrontMember,
@@ -63,7 +64,7 @@ import type {
 
 // 編成 (formation) を足して GameState の形が変わったので、古いセーブと噛み合わなくなる。
 // 区切りを上げて捨てる
-export const SAVE_VERSION = 5;
+export const SAVE_VERSION = 6;
 
 /** 回復薬の所持上限 */
 const POTION_MAX = 3;
@@ -82,6 +83,8 @@ export type Action =
   | { type: 'potion' }
   /** 拠点の編成画面。所持キャラの一覧から前衛スロットへ配置する。id が null ならそのスロットを空にする */
   | { type: 'formation-set'; slot: number; id: string | null }
+  /** 拠点の編成画面の操作列。前衛 6 枠をまとめて空にする */
+  | { type: 'formation-clear-all' }
   /** ダンジョン内 (戦闘外) の編成。今のデッキの中から前衛スロットの中身を選び直す。新しいキャラは増やせない */
   | { type: 'dungeon-formation-set'; slot: number; id: string | null }
   | { type: 'battle-skill'; slot: number; skill: number }
@@ -104,9 +107,18 @@ export interface GameState {
   /**
    * 前衛の編成。長さ 6 固定、値は roster の id か空きを示す null。
    * デッキは絞らないので、控えは前衛に選ばれなかった roster 全員が自動で務める。
-   * 全スロット空 (初期状態) のときだけ roster の先頭 6 人を自動で詰める (resolveFormation)
+   * 一度も編成を触っていない (formationTouched が false) ときだけ
+   * roster の先頭 6 人を自動で詰める (resolveFormation)
    */
   formation: Formation;
+  /**
+   * 編成を一度でも編集したか (「空にする」「全て外す」も含む)。
+   * これが false の間だけ表示・出撃時に自動詰めへ落ちる。
+   * formation の中身 (全部 null かどうか) だけで判定すると、「全て外す」で
+   * 明示的に空にした場合まで「自動詰めの前」と誤認して詰め直してしまうため、
+   * 別のフラグとして持つ
+   */
+  formationTouched: boolean;
   /** 今の酒場の品揃え (コモンの id、最大 3 人) */
   tavern: string[];
   /** 解放済みの区画。ボスを倒すと 1 つ増える */
@@ -148,6 +160,7 @@ export function newGame(seed: string): GameState {
     potions: 0,
     roster: ['hero', 'mate'],
     formation: emptyFormation(),
+    formationTouched: false,
     tavern: [],
     unlocked: 1,
     run: null,
@@ -328,7 +341,7 @@ export function step(state: GameState, action: Action): void {
     case 'sortie': {
       if (state.run) break;
       if (action.sectorId > state.unlocked) break;
-      state.run = startRun(action.sectorId, state.roster, state.formation);
+      state.run = startRun(action.sectorId, state.roster, state.formation, state.formationTouched);
       state.result = null;
       addLog(state, 'info', `${sectorById(action.sectorId).name}へ潜った。`);
       break;
@@ -435,7 +448,21 @@ export function step(state: GameState, action: Action): void {
       // 代わりに dungeon-formation-set でその場のデッキを並べ替える
       if (state.run || state.battle) break;
       if (action.id !== null && !state.roster.includes(action.id)) break;
+      if (!state.formationTouched) {
+        // 初回の編集はまず今の自動詰めの並びを確定させてから 1 枠だけ変える。
+        // でないと isFormationUnset が false になった瞬間、自動詰めしていた
+        // 残り 5 枠まで表示上いっせいに空くバグになる (このスロットしか触っていないのに)
+        state.formation = autoFillFormation(state.roster);
+        state.formationTouched = true;
+      }
       placeInFormation(state.formation, action.slot, action.id);
+      break;
+    }
+
+    case 'formation-clear-all': {
+      if (state.run || state.battle) break;
+      state.formation = emptyFormation();
+      state.formationTouched = true;
       break;
     }
 
@@ -496,6 +523,11 @@ export function step(state: GameState, action: Action): void {
       const b = state.battle;
       if (!run || !b) break;
       endTurn(b, rng);
+      // 大技まで「あと 1」になったターンの終わりに警告を出す。アイコンだけだと見落とすため。
+      // ルールではなく戦況の言い換えなので、ここ (game.ts) で battle.log に足す
+      if (b.outcome === 'ongoing' && b.enemy.hp > 0 && b.enemy.countdown === 1) {
+        logBattle(b, 'warn', `${b.enemy.def.name} が力を溜めている。`);
+      }
       drainDowned(run, b);
       settleBattle(state, run, rng);
       break;
@@ -552,7 +584,7 @@ function passiveEffectText(p: PassiveDef): string {
   const parts: string[] = [];
   const h = p.hooks;
   if (h.manaPerTurn) parts.push(`マナ払い出し ${h.manaPerTurn > 0 ? '+' : ''}${h.manaPerTurn}`);
-  if (h.guardRate) parts.push(`ガード軽減率 ${h.guardRate > 0 ? '+' : ''}${Math.round(h.guardRate * 100)}%`);
+  if (h.guardRate) parts.push(`防御軽減率 ${h.guardRate > 0 ? '+' : ''}${Math.round(h.guardRate * 100)}%`);
   if (h.telegraph) parts.push(`大技の予告 ${h.telegraph > 0 ? '+' : ''}${h.telegraph} ターン`);
   if (h.cover) parts.push('ボスの大技を前衛にいる間、身代わりする');
   return parts.length > 0 ? parts.join('・') : '効果なし';
@@ -704,10 +736,10 @@ function toTownView(state: GameState): TownView {
   const entryOf = (id: string) => CHARACTERS.find((c) => c.id === id);
   const rosterEntries = state.roster.map(entryOf).filter((c): c is CharacterEntry => c !== undefined);
 
-  const resolved = resolveFormation(state.roster, state.formation);
+  const resolved = resolveFormation(state.roster, state.formation, state.formationTouched);
   const formation: FormationEditorView = {
     slots: toFormationSlots(resolved),
-    auto: isFormationUnset(state.formation),
+    auto: !state.formationTouched,
     roster: rosterEntries.map((entry) => {
       const idx = resolved.indexOf(entry.id);
       return { ...characterCard(entry), placedSlot: idx >= 0 ? idx : null };

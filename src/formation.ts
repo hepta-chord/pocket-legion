@@ -31,9 +31,20 @@ export function autoFillFormation(roster: readonly string[]): Formation {
   return slots;
 }
 
-/** 出撃直前に実際に使う前衛の並びを決める。未設定なら自動詰めに落ちる */
-export function resolveFormation(roster: readonly string[], formation: readonly (string | null)[]): Formation {
-  return isFormationUnset(formation) ? autoFillFormation(roster) : [...formation];
+/**
+ * 出撃直前・編成表示に実際に使う前衛の並びを決める。
+ * touched を省くと formation の中身 (全部 null かどうか) から自動判定するが、
+ * これだと「一度も触っていない (自動詰めのまま)」と「触った結果たまたま全部空にした」を
+ * 区別できない (後者も isFormationUnset が true になり、自動詰めへ引き戻されてしまう)。
+ * 「全て外す」を本当に空のまま見せるには、呼び出し側 (GameState.formationTouched) が
+ * 触ったかどうかを別に持って、touched として明示的に渡す必要がある
+ */
+export function resolveFormation(
+  roster: readonly string[],
+  formation: readonly (string | null)[],
+  touched: boolean = !isFormationUnset(formation),
+): Formation {
+  return touched ? [...formation] : autoFillFormation(roster);
 }
 
 /**
@@ -60,8 +71,12 @@ function fighterOf(id: string): Fighter | null {
  * 前衛は編成どおりに、控えは前衛に選ばれなかった roster 全員になる。
  * デッキは絞らない仕様なので、控えの人数に上限は無い
  */
-export function partyFromRosterAndFormation(roster: readonly string[], formation: readonly (string | null)[]): Party {
-  const front6 = resolveFormation(roster, formation);
+export function partyFromRosterAndFormation(
+  roster: readonly string[],
+  formation: readonly (string | null)[],
+  touched?: boolean,
+): Party {
+  const front6 = resolveFormation(roster, formation, touched);
   const frontIds = new Set(front6.filter((id): id is string => id !== null));
   const front = front6.map((id) => (id ? fighterOf(id) : null));
   const reserve = roster
