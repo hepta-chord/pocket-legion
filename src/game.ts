@@ -4,17 +4,18 @@
 // ここは render/ を import しない。文字で描くか画像で描くかを知らないままにしておく。
 
 import {
+  DEFENSE_COST,
+  DEFENSE_MAX,
   effectiveCost,
   endTurn,
-  GUARD_COST,
-  GUARD_MAX,
   logBattle,
   MANA_CAP,
   refillFront,
   resetSortieProgress,
   startBattle,
   swapMembers,
-  useGuard,
+  toggleFlee,
+  useDefense,
   usePotion,
   useSkill,
   whyCannotUse,
@@ -62,9 +63,9 @@ import type {
   ViewModel,
 } from './view';
 
-// 編成 (formation) を足して GameState の形が変わったので、古いセーブと噛み合わなくなる。
-// 区切りを上げて捨てる
-export const SAVE_VERSION = 6;
+// 戦闘ルール v2 (防御の改称・鼓舞ガードのスタック制・マナの奇偶・スタン・逃げる) で
+// GameState / BattleState の形が変わったので、古いセーブと噛み合わなくなる。区切りを上げて捨てる
+export const SAVE_VERSION = 7;
 
 /** 回復薬の所持上限 */
 const POTION_MAX = 3;
@@ -88,8 +89,10 @@ export type Action =
   /** ダンジョン内 (戦闘外) の編成。今のデッキの中から前衛スロットの中身を選び直す。新しいキャラは増やせない */
   | { type: 'dungeon-formation-set'; slot: number; id: string | null }
   | { type: 'battle-skill'; slot: number; skill: number }
-  | { type: 'battle-guard' }
+  | { type: 'battle-defense' }
   | { type: 'battle-swap'; moves: SwapMove[] }
+  /** 逃げるの宣言・キャンセルのトグル */
+  | { type: 'battle-flee' }
   | { type: 'battle-end-turn' };
 
 /** 進行中の戦闘の種別。決着時の報酬とボス処理の分岐に使う */
@@ -123,6 +126,11 @@ export interface GameState {
   tavern: string[];
   /** 解放済みの区画。ボスを倒すと 1 つ増える */
   unlocked: number;
+  /**
+   * マナ払い出しの成長ぶん。区画のクリアで底上げする (中層クリアで +1 して、
+   * 奇数ターンの基礎が偶数ターンと揃って 3/3 になる)
+   */
+  manaBonus: number;
   run: RunState | null;
   battle: BattleState | null;
   /** battle が何の遭遇から始まったか。battle が null のときは null */
@@ -163,6 +171,7 @@ export function newGame(seed: string): GameState {
     formationTouched: false,
     tavern: [],
     unlocked: 1,
+    manaBonus: 0,
     run: null,
     battle: null,
     battleKind: null,
@@ -277,7 +286,7 @@ function finishRun(state: GameState, won: boolean, rng: Rng): void {
 // 戦闘
 
 function enterBattle(state: GameState, run: RunState, kind: BattleKind, enemyDef: EnemyDef, line: string): void {
-  state.battle = startBattle(run.party, run.hp, run.maxHp, enemyDef);
+  state.battle = startBattle(run.party, run.hp, run.maxHp, enemyDef, state.manaBonus);
   state.battleKind = kind;
   addLog(state, 'warn', line);
 }
@@ -298,6 +307,16 @@ function settleBattle(state: GameState, run: RunState, rng: Rng): void {
   // 戦闘中は battle.log をその場で見せているだけなので、抜けるときにまとめて本編ログへ移す
   for (const line of b.log) addLog(state, line.kind, line.text);
 
+  if (b.outcome === 'fled') {
+    // 逃げるが発動した戦闘。報酬は無し、パーティ HP は引き継ぎ、遭遇は消費される
+    // (run.pending は既に null なのでそのまま探索を続けられる。ボス戦から逃げても区画は解放されない)
+    run.hp = b.hp;
+    refillFront(run.party);
+    state.battle = null;
+    state.battleKind = null;
+    return;
+  }
+
   if (b.outcome === 'victory') {
     run.hp = b.hp;
     const scale = 1 + run.depth / 10;
@@ -316,6 +335,8 @@ function settleBattle(state: GameState, run: RunState, rng: Rng): void {
     state.battle = null;
     state.battleKind = null;
     if (wasBoss) {
+      // 中層 (区画 2) のボスを倒すと、マナ払い出しの奇数ターンが底上げされ 3/3 の律動になる
+      if (run.sectorId === 2) state.manaBonus = Math.max(state.manaBonus, 1);
       if (state.unlocked === run.sectorId && state.unlocked < SECTORS.length) {
         state.unlocked += 1;
         addLog(state, 'good', `${sectorById(state.unlocked).name}への道が開いた。`);
@@ -369,7 +390,7 @@ export function step(state: GameState, action: Action): void {
         case 'battle':
         case 'elite': {
           run.pending = null;
-          const foe = makeFoe(run.depth, rng, kind === 'elite');
+          const foe = makeFoe(run.depth, rng, kind === 'elite', run.sectorId);
           enterBattle(state, run, kind, foe, `${foe.name} が立ちはだかる。`);
           break;
         }
@@ -501,10 +522,10 @@ export function step(state: GameState, action: Action): void {
       break;
     }
 
-    case 'battle-guard': {
+    case 'battle-defense': {
       const b = state.battle;
       if (!b) break;
-      useGuard(b);
+      useDefense(b);
       break;
     }
 
@@ -518,15 +539,24 @@ export function step(state: GameState, action: Action): void {
       break;
     }
 
+    case 'battle-flee': {
+      const b = state.battle;
+      if (!b) break;
+      toggleFlee(b, rng);
+      break;
+    }
+
     case 'battle-end-turn': {
       const run = state.run;
       const b = state.battle;
       if (!run || !b) break;
       endTurn(b, rng);
-      // 大技まで「あと 1」になったターンの終わりに警告を出す。アイコンだけだと見落とすため。
-      // ルールではなく戦況の言い換えなので、ここ (game.ts) で battle.log に足す
-      if (b.outcome === 'ongoing' && b.enemy.hp > 0 && b.enemy.countdown === 1) {
-        logBattle(b, 'warn', `${b.enemy.def.name} が力を溜めている。`);
+      // 大技・ダウン攻撃それぞれ「あと 1」になったターンの終わりに警告を出す。
+      // アイコンだけだと見落とすため。ルールではなく戦況の言い換えなので、
+      // ここ (game.ts) で battle.log に足す
+      if (b.outcome === 'ongoing' && b.enemy.hp > 0) {
+        if (b.enemy.bigCountdown === 1) logBattle(b, 'warn', `${b.enemy.def.name} が力を溜めている。`);
+        if (b.enemy.downCountdown === 1) logBattle(b, 'warn', `${b.enemy.def.name} がダウン攻撃の構えを見せた。`);
       }
       drainDowned(run, b);
       settleBattle(state, run, rng);
@@ -562,10 +592,14 @@ function skillEffectText(def: ActionSkillDef): string {
       return e.target === 'all' ? `敵全体に威力 ${e.power.toFixed(1)} の攻撃` : `敵に威力 ${e.power.toFixed(1)} の攻撃`;
     case 'heal':
       return `HP を最大値の ${Math.round(e.power * 100)}% 回復`;
-    case 'buff':
-      return `攻撃に +${Math.round(e.power * 100)}% の支援`;
+    case 'cheer':
+      return `鼓舞を ${e.stacks} 枚積む (1 枚につき攻撃 +20%、3 枚まで)`;
+    case 'ward':
+      return `ガードを ${e.stacks} 枚積む (1 枚につき被ダメージ -20%、3 枚まで)`;
     case 'barrier':
       return '次に来る敵の攻撃を 1 回無効化';
+    case 'stun-self':
+      return '代償として自分がその場でスタンする';
   }
 }
 
@@ -584,8 +618,8 @@ function passiveEffectText(p: PassiveDef): string {
   const parts: string[] = [];
   const h = p.hooks;
   if (h.manaPerTurn) parts.push(`マナ払い出し ${h.manaPerTurn > 0 ? '+' : ''}${h.manaPerTurn}`);
-  if (h.guardRate) parts.push(`防御軽減率 ${h.guardRate > 0 ? '+' : ''}${Math.round(h.guardRate * 100)}%`);
-  if (h.telegraph) parts.push(`大技の予告 ${h.telegraph > 0 ? '+' : ''}${h.telegraph} ターン`);
+  if (h.defenseRate) parts.push(`防御軽減率 ${h.defenseRate > 0 ? '+' : ''}${Math.round(h.defenseRate * 100)}%`);
+  if (h.telegraph) parts.push(`大技・ダウン攻撃の予告 ${h.telegraph > 0 ? '+' : ''}${h.telegraph} ターン`);
   if (h.cover) parts.push('ボスの大技を前衛にいる間、身代わりする');
   return parts.length > 0 ? parts.join('・') : '効果なし';
 }
@@ -602,12 +636,14 @@ function toBattleView(b: BattleState, potions: number): BattleView {
     maxHp: b.maxHp,
     mana: b.mana,
     manaCap: MANA_CAP,
-    guard: b.guard,
-    guardMax: GUARD_MAX,
+    defense: b.defense,
+    defenseMax: DEFENSE_MAX,
     barrier: b.barrier,
     turn: b.turn,
     combo: b.combo,
-    buff: b.buff,
+    cheerStacks: b.cheer.stacks,
+    wardStacks: b.ward.stacks,
+    fleeIn: b.fleeIn,
     potions,
     enemy: {
       name: e.def.name,
@@ -615,7 +651,8 @@ function toBattleView(b: BattleState, potions: number): BattleView {
       hp: e.hp,
       maxHp: e.def.maxHp,
       resist: resistLabel(e.def.resist),
-      countdown: e.countdown,
+      bigCountdown: e.bigCountdown,
+      downCountdown: e.downCountdown,
       alive: e.hp > 0,
       isBoss: e.def.isBoss,
     },
@@ -624,8 +661,10 @@ function toBattleView(b: BattleState, potions: number): BattleView {
       return {
         name: f.name,
         faction: FACTION_NAMES[f.faction],
+        stunned: f.stunnedUntil > 0 && b.turn <= f.stunnedUntil,
         skills: f.skills.map((s, skillIndex) => ({
           name: s.def.name,
+          shortName: s.def.shortName,
           cost: effectiveCost(s),
           raised: s.turnBump + s.sortieBump,
           usable: whyCannotUse(b, slot, skillIndex) === null,
@@ -636,7 +675,7 @@ function toBattleView(b: BattleState, potions: number): BattleView {
     }),
     reserve: b.party.reserve.map(fighterCard),
     swapCooldown: b.party.swapCooldown,
-    canGuard: b.guard < GUARD_MAX && b.mana >= GUARD_COST,
+    canDefense: b.defense < DEFENSE_MAX && b.mana >= DEFENSE_COST,
   };
 }
 
@@ -702,16 +741,17 @@ function toDungeonFormationView(run: RunState): DungeonFormationView {
 function toDungeonView(run: RunState, potions: number, roster: readonly string[]): DungeonView {
   const sector = sectorOf(run);
   const pending = run.atBoss
-    ? { title: '守護者', body: '奥から重い足音がする。', action: '挑む' }
+    ? { kind: 'boss' as const, title: '守護者', body: '奥から重い足音がする。', action: '挑む' }
     : run.pending
       ? run.pending.kind === 'boss-alt'
         ? {
+            kind: run.pending.kind,
             title: run.pending.title,
             body: run.pending.body,
             action: run.pending.action,
             alt: hasUnownedRare(roster) ? run.pending.altAction : undefined,
           }
-        : { title: run.pending.title, body: run.pending.body, action: run.pending.action }
+        : { kind: run.pending.kind, title: run.pending.title, body: run.pending.body, action: run.pending.action }
       : null;
   return {
     kind: 'dungeon',

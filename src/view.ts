@@ -90,8 +90,13 @@ export interface TownView {
   formation: FormationEditorView;
 }
 
-/** ダンジョン画面のイベント。alt があれば二択になる (ボス前の分岐イベント) */
+/**
+ * ダンジョン画面のイベント。alt があれば二択になる (ボス前の分岐イベント)。
+ * kind はアイコン選び専用の分類で、render/ 側 (main.ts が呼ぶ) がここから絵を選ぶ。
+ * boss-alt は「回復する」の絵 (回復) にする。ボスの広間だけ EventDef を経ないので 'boss' を持つ
+ */
 interface DungeonEventView {
+  kind: 'battle' | 'elite' | 'treasure' | 'spring' | 'trap' | 'recruit' | 'boss-alt' | 'boss';
   title: string;
   body: string;
   action: string;
@@ -131,15 +136,20 @@ export interface BattleView {
   maxHp: number;
   mana: number;
   manaCap: number;
-  guard: number;
-  guardMax: number;
-  /** バリアが張られているか。あれば次の敵の攻撃を 1 回無効化する */
+  /** 積んだ防御の枚数 */
+  defense: number;
+  defenseMax: number;
+  /** バリアが張られているか。あれば次の敵の攻撃 (ダウン攻撃も含む) を 1 回無効化する */
   barrier: boolean;
   turn: number;
   /** 同一ターン内で命中した攻撃の回数。0 は目立たせない表示にする */
   combo: number;
-  /** 支援 (buff) スキルによる攻撃倍率への加算。0 なら支援中でない */
-  buff: number;
+  /** 鼓舞スタック。0 なら支援中でない */
+  cheerStacks: number;
+  /** ward スタック。0 なら被ダメージ減の支援中でない */
+  wardStacks: number;
+  /** 逃げるの宣言から発動までの残りターン。null は宣言していない */
+  fleeIn: number | null;
   potions: number;
   /** 敵は常に 1 体。対象選択を無くすための仕様なので単数で持つ */
   enemy: {
@@ -151,7 +161,9 @@ export interface BattleView {
     /** 表示用。'物理' | '魔法' | null */
     resist: string | null;
     /** 大技まであと何ターンか */
-    countdown: number;
+    bigCountdown: number;
+    /** ダウン攻撃まであと何ターンか。持たない敵は null */
+    downCountdown: number | null;
     alive: boolean;
     isBoss: boolean;
   };
@@ -159,8 +171,12 @@ export interface BattleView {
   slots: ({
     name: string;
     faction: string;
+    /** スタンで行動不可になっているか */
+    stunned: boolean;
     skills: {
       name: string;
+      /** ボタンに出す短縮名。折り返さない前提の 3〜4 文字 */
+      shortName: string;
       cost: number;
       /** 素のコストから上がっているぶん。0 なら上昇していない */
       raised: number;
@@ -174,7 +190,7 @@ export interface BattleView {
   /** 交代ピッカーの候補。編成画面と同じ要約情報を出す (名前・陣営・レアリティ・攻撃力・体力) */
   reserve: FormationCharacterView[];
   swapCooldown: number;
-  canGuard: boolean;
+  canDefense: boolean;
 }
 
 /** 出撃の結果 */

@@ -10,15 +10,15 @@
 // ここの数字は骨格の健全性 (詰み方・戦術の偏り) を見るためのもので、最終調整ではない。
 
 import {
+  DEFENSE_MAX,
   endTurn,
-  GUARD_MAX,
   newParty,
   partyMaxHp,
   refillFront,
   resetSortieProgress,
   startBattle,
   swapMembers,
-  useGuard,
+  useDefense,
   useSkill,
   whyCannotUse,
   effectiveCost,
@@ -83,7 +83,7 @@ function usableAttacks(state: BattleState): AttackChoice[] {
   return out.sort((a, b) => a.cost - b.cost || b.power - a.power);
 }
 
-function findSupport(state: BattleState, kind: 'heal' | 'buff' | 'barrier'): { slot: number; skill: number } | null {
+function findSupport(state: BattleState, kind: 'heal' | 'cheer' | 'ward' | 'barrier'): { slot: number; skill: number } | null {
   for (let slot = 0; slot < state.party.front.length; slot++) {
     const f = state.party.front[slot];
     if (!f) continue;
@@ -106,22 +106,24 @@ function driedUp(state: BattleState, slot: number): boolean {
   return Math.min(...costs) > 3;
 }
 
+/**
+ * 貪欲な方針 (docs/batch-b.md 補足): 防御は毎ターン 1 枚積む。大技の予告 (あと 1) が
+ * 出たら 3〜4 枚に増やす。ダウン攻撃の予告にはバリアがあれば張る。鼓舞とガードは
+ * 切れていたら積む。逃げるは使わない。
+ */
 function playTurn(state: BattleState, rng: Rng): void {
-  // 予告が出ているなら guardBreak まで積めればダウンを止められる。
-  // 届かないなら軽減ぶんだけ取って、残りのマナは攻めに回す。
-  // バリアがあるならそれで足りるので、ガードは積まない。無いなら予告を見てから張る
-  const incoming = state.enemy.hp > 0 && state.enemy.countdown === 1;
-  if (incoming && !state.barrier) {
+  // ダウン攻撃の予告。バリアが無ければ張っておく (防御・ward では防げないため)
+  const downSoon = state.enemy.hp > 0 && state.enemy.downCountdown === 1;
+  if (downSoon && !state.barrier) {
     const barrierSkill = findSupport(state, 'barrier');
-    if (barrierSkill) {
-      useSkill(state, barrierSkill.slot, barrierSkill.skill, rng);
-    } else {
-      const need = Math.min(GUARD_MAX, state.enemy.def.guardBreak);
-      const want = state.mana >= need ? need : state.hp < state.maxHp * 0.5 ? 2 : 1;
-      while (state.guard < want && useGuard(state)) {
-        /* 積めるだけ積む */
-      }
-    }
+    if (barrierSkill) useSkill(state, barrierSkill.slot, barrierSkill.skill, rng);
+  }
+
+  // 防御は毎ターン 1 枚。大技の予告 (あと 1) が出ているターンだけ 3〜4 枚まで積み増す
+  const bigSoon = state.enemy.hp > 0 && state.enemy.bigCountdown === 1;
+  const want = bigSoon ? DEFENSE_MAX : 1;
+  while (state.defense < want && useDefense(state)) {
+    /* 積めるだけ積む */
   }
 
   if (state.hp < state.maxHp * 0.45) {
@@ -129,9 +131,14 @@ function playTurn(state: BattleState, rng: Rng): void {
     if (healer) useSkill(state, healer.slot, healer.skill, rng);
   }
 
-  if (state.mana >= 3) {
-    const buffer = findSupport(state, 'buff');
-    if (buffer) useSkill(state, buffer.slot, buffer.skill, rng);
+  // 鼓舞・ガード (ward) は切れていたら積み直す
+  if (state.cheer.stacks === 0) {
+    const cheerSkill = findSupport(state, 'cheer');
+    if (cheerSkill) useSkill(state, cheerSkill.slot, cheerSkill.skill, rng);
+  }
+  if (state.ward.stacks === 0) {
+    const wardSkill = findSupport(state, 'ward');
+    if (wardSkill) useSkill(state, wardSkill.slot, wardSkill.skill, rng);
   }
 
   // 攻撃は安い順に、使えるものが無くなるまで
@@ -211,7 +218,7 @@ export function playSortie(sectorId: number, startDepth: number, rng: Rng): Sort
     }
     maxHp = partyMaxHp(party);
 
-    const state = startBattle(party, hp, maxHp, makeFoe(depth, rng));
+    const state = startBattle(party, hp, maxHp, makeFoe(depth, rng, false, sectorId));
     let turns = 0;
     while (state.outcome === 'ongoing' && turns < TURN_CAP) {
       playTurn(state, rng);
