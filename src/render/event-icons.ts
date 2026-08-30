@@ -11,7 +11,9 @@ const TREASURE = [' ______ ', '|      |', '|~~~~~~|', '|______|', '  宝箱  '];
 
 const HEAL = ['  ___  ', ' /  \\  ', '|  +  | ', ' \\___/ ', '  回復  '];
 
-const TRAP = ['  /\\   ', ' /  \\  ', '/ !! \\ ', '------- ', '   罠   '];
+// 「何も無い」の絵。中身は開くまで分からない (罠が隠れていることもある) が、
+// 見た目は最後まで「何も無い」静かな通路のまま変えない
+const NOTHING = ['       ', '   .   ', '  . .  ', '   .   ', ' 何も無い'];
 
 const ALLY = ['  .-.  ', ' (o.o) ', '  /|\\  ', '  / \\  ', '  仲間  '];
 
@@ -23,7 +25,7 @@ const NAMED: Record<string, readonly string[]> = {
   treasure: TREASURE,
   spring: HEAL,
   'boss-alt': HEAL,
-  trap: TRAP,
+  nothing: NOTHING,
   recruit: ALLY,
   boss: BOSS,
 };

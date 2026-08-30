@@ -37,7 +37,7 @@ describe('generateCommon', () => {
     const b = generateCommon('kingdom', new Rng(999), 2);
     expect(a.id).not.toBe(b.id);
     expect(a.name).toBe(b.name);
-    expect(a.attack).toBe(b.attack);
+    expect(a.baseAttack).toBe(b.baseAttack);
   });
 
   it('どの陣営でも鼓舞 (支援) とガード (壁) のどちらも 2 枠目に持ちうる (陣営染めが成立する)', () => {
@@ -51,7 +51,7 @@ describe('generateCommon', () => {
   it('攻撃力・体力に個体差が出る (同じ陣営・同じ型でも値が揺れる)', () => {
     const rng = new Rng(42);
     const attacks = new Set<number>();
-    for (let i = 0; i < 10; i++) attacks.add(generateCommon('mercs', rng, i).attack);
+    for (let i = 0; i < 10; i++) attacks.add(generateCommon('mercs', rng, i).baseAttack);
     expect(attacks.size).toBeGreaterThan(1);
   });
 });

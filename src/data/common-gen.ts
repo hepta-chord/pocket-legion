@@ -8,6 +8,7 @@
 import type { Faction } from '../data/factions';
 import type { CharacterEntry } from '../data/characters';
 import type { ActionSkillDef, PassiveDef } from '../data/skills';
+import type { Curve } from '../growth';
 import type { Rng } from '../rng';
 
 // ---------------------------------------------------------------------------
@@ -165,13 +166,23 @@ export const SKILL_POOLS: Record<Faction, FactionPool> = {
 // ---------------------------------------------------------------------------
 // 名前。陣営ごとに題材を変え、見ただけで所属が分かるようにする。全部カタカナ
 
+// 候補数は雇用の上限 (data/factions.ts FACTION_HIRE_CAP) より多めに用意する
+// (王国 16 / 教団 12 / 傭兵団 10 / 辺境 6 が目安。docs/plan.md「コモンの生成」)。
+// 酒場の 1 回の品揃えの中で名前が重複しないよう引き直しているので、
+// 候補が上限ぎりぎりだと引けなくなるため
 export const NAME_POOLS: Record<Faction, readonly string[]> = {
   // 天気 (英語)
-  kingdom: ['レイン', 'サンダー', 'ストーム', 'ブリーズ', 'ヘイル', 'ミスト', 'フロスト', 'ゲイル'],
+  kingdom: [
+    'レイン', 'サンダー', 'ストーム', 'ブリーズ', 'ヘイル', 'ミスト', 'フロスト', 'ゲイル',
+    'スノー', 'クラウド', 'フォグ', 'サンシャイン', 'タイフーン', 'サイクロン', 'モンスーン', 'オーロラ',
+  ],
   // 果物 (イタリア語)
-  order: ['メーラ', 'ペーラ', 'ウーヴァ', 'フィーコ', 'リモーネ', 'チリエージャ', 'ペスカ', 'アランチャ'],
+  order: [
+    'メーラ', 'ペーラ', 'ウーヴァ', 'フィーコ', 'リモーネ', 'チリエージャ', 'ペスカ', 'アランチャ',
+    'フラーゴラ', 'メローネ', 'プルーニャ', 'アナナス',
+  ],
   // 酒
-  mercs: ['ウォッカ', 'ジン', 'ラム', 'テキーラ', 'ブランデー', 'グラッパ', 'アブサン', 'メスカル'],
+  mercs: ['ウォッカ', 'ジン', 'ラム', 'テキーラ', 'ブランデー', 'グラッパ', 'アブサン', 'メスカル', 'ウイスキー', 'コニャック'],
   // 山 (日本語)
   frontier: ['フジ', 'アサマ', 'ハクバ', 'タテヤマ', 'キリシマ', 'ヤリガタケ', 'ホタカ', 'オンタケ'],
 };
@@ -216,13 +227,20 @@ const BASE_STATS: Record<Archetype, { attack: number; vitality: number }> = {
   wall: { attack: 75, vitality: 90 },
 };
 
-/** 酒場の雇用額。生成コモンは一律 (旧・固定コモンの価格を踏襲) */
-export const COMMON_PRICE = 120;
+/** コモンのレベル上限の幅。16〜24 を目安にする (docs/batch-growth.md 補足) */
+const COMMON_MAX_LEVEL_MIN = 16;
+const COMMON_MAX_LEVEL_MAX = 24;
+/** コモンの成長補正値の幅。上限到達時に base の 1.5〜1.9 倍あたりまで伸びる */
+const COMMON_GROWTH_MIN = 0.5;
+const COMMON_GROWTH_MAX = 0.9;
+const CURVES: readonly Curve[] = ['linear', 'early', 'late'];
 
 /**
  * コモンを 1 人生成する。スキル 1 枠目・2 枠目をそれぞれの候補群から 1 つずつ引き、
  * 名前も陣営の候補から引く。攻撃力・体力は 2 枠目で決まる型の基準値に幅 (±15%) を
  * 持たせて振るので、同じ型でも個体差が出る。
+ * レベル上限・成長補正値・カーブの型も個体ごとに振る (docs/batch-growth.md 補足)。
+ * 育ち切った到達値まで揃えてしまうと個性が消えるため、ここで意図的に揃えない。
  *
  * serial は id の衝突を避けるためだけの通し番号 (GameState.nextCommonId)。
  * 中身 (名前・スキル・数値) は rng だけで決まるので、同じ seed なら同じ個体が出る
@@ -234,8 +252,8 @@ export function generateCommon(faction: Faction, rng: Rng, serial: number): Char
   const type = archetypeOf(slot2);
   const base = BASE_STATS[type];
   const variance = () => 0.85 + rng.next() * 0.3;
-  const attack = Math.round(base.attack * variance());
-  const vitality = Math.round(base.vitality * variance());
+  const baseAttack = Math.round(base.attack * variance());
+  const baseVitality = Math.round(base.vitality * variance());
   const name = rng.pick(NAME_POOLS[faction]);
 
   return {
@@ -243,10 +261,14 @@ export function generateCommon(faction: Faction, rng: Rng, serial: number): Char
     name,
     faction,
     rarity: 'common',
-    price: COMMON_PRICE,
-    attack,
-    vitality,
+    baseAttack,
+    baseVitality,
     skills: slot2.kind === 'skill' ? [skill1, slot2.def] : [skill1],
     passives: slot2.kind === 'passive' ? [slot2.def] : [],
+    level: 1,
+    exp: 0,
+    maxLevel: rng.int(COMMON_MAX_LEVEL_MIN, COMMON_MAX_LEVEL_MAX),
+    growth: COMMON_GROWTH_MIN + rng.next() * (COMMON_GROWTH_MAX - COMMON_GROWTH_MIN),
+    curve: rng.pick(CURVES),
   };
 }

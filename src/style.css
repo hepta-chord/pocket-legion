@@ -251,8 +251,8 @@ button:active:not(:disabled) {
   color: var(--good);
 }
 
-.event-icon-trap {
-  color: var(--bad);
+.event-icon-nothing {
+  color: var(--dim);
 }
 
 .event-icon-boss {
@@ -326,6 +326,22 @@ button:active:not(:disabled) {
   font-size: 12px;
 }
 
+/* イベントの二択ボタン。操作列に混ぜず、ステージ側のウィンドウに置く
+   (docs/plan.md「イベントの分岐」)。二択が出ないイベントは操作列のボタン 1 つのままなので、
+   これは alt を持つ occurrence のときだけ現れる */
+.event-box-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.event-box-actions button {
+  flex: 1;
+  min-height: 32px;
+  font-size: 13px;
+  font-weight: bold;
+}
+
 /* 状態アイコンの左右縦列。ステージに重ねる (敵画像に被ってよい)。
    味方の状態は左、敵の状態は右に縦一列で置く。バッジは折り返さず (nowrap)、
    収まりきらない項目は文字数を削るか (物理耐性→物理耐)、バッジ自体の幅を広げて対応する */
@@ -375,6 +391,12 @@ button:active:not(:disabled) {
 .badge.down {
   border-color: var(--bad);
   color: var(--bad);
+}
+
+/* スタンの予告。大技 (warn/黄) ・ダウン攻撃 (down/赤) とは別色にして見分ける */
+.badge.stun {
+  border-color: var(--mana);
+  color: var(--mana);
 }
 
 /* ---------------------------------------------------------------------- */

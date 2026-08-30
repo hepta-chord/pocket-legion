@@ -21,11 +21,15 @@ function entry(id: string, faction: Faction = 'kingdom'): CharacterEntry {
     name: id,
     faction,
     rarity: 'common',
-    price: 120,
-    attack: 100,
-    vitality: 50,
+    baseAttack: 100,
+    baseVitality: 50,
     skills: [],
     passives: [],
+    level: 1,
+    exp: 0,
+    maxLevel: 20,
+    growth: 0.5,
+    curve: 'linear',
   };
 }
 
@@ -121,9 +125,8 @@ describe('partyFromRosterAndFormation', () => {
       name: 'レイン',
       faction: 'kingdom',
       rarity: 'common',
-      price: 120,
-      attack: 111,
-      vitality: 47,
+      baseAttack: 111,
+      baseVitality: 47,
       skills: [
         {
           id: 'gen-attack',
@@ -135,6 +138,11 @@ describe('partyFromRosterAndFormation', () => {
         },
       ],
       passives: [],
+      level: 1,
+      exp: 0,
+      maxLevel: 20,
+      growth: 0.5,
+      curve: 'linear',
     };
     const party = partyFromRosterAndFormation([generated], emptyFormation());
     const f = party.front[0];

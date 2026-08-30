@@ -116,6 +116,11 @@ function rarityLabel(rarity: 'common' | 'rare'): string {
   return rarity === 'rare' ? 'レア' : 'コモン';
 }
 
+/** 「Lv 1/20」の形。キャラ枠・編成の一覧・酒場のカードのどれにもこの形で出す (growth/curve は出さない) */
+function lvLabel(c: { level: number; maxLevel: number }): string {
+  return `Lv ${c.level}/${c.maxLevel}`;
+}
+
 // ---------------------------------------------------------------------------
 // ステータスバー
 
@@ -321,7 +326,7 @@ function renderTavernStage(s: TownView): void {
     name.textContent = `${t.name} (${t.faction} / ${rarityLabel(t.rarity)})`;
     const sub = document.createElement('p');
     sub.className = 'card-sub';
-    sub.textContent = `攻撃 ${t.attack} ・ 体力 ${t.vitality} ・ ${t.price} G`;
+    sub.textContent = `${lvLabel(t)} ・ 攻撃 ${t.attack} ・ 体力 ${t.vitality} ・ ${t.price} G`;
     card.append(name, sub);
     card.addEventListener('click', () => {
       activeDetail = {
@@ -350,8 +355,12 @@ function renderFormationStage(s: TownView): void {
   stageBody.append(note);
 }
 
-/** ステージ下端に重ねる、見出し + 本文だけの小箱。探索のイベント表示と戦闘の予告パネルが共有する */
-function eventBox(title: string, body: string): HTMLElement {
+/**
+ * ステージ下端に重ねる、見出し + 本文だけの小箱。探索のイベント表示と戦闘の予告パネルが共有する。
+ * buttons を渡すと本文の下に横並びで置く (イベントの二択。docs/plan.md「イベントの分岐」:
+ * 「選択肢はステージ側のウィンドウに出す」。二択を持たないイベントは渡さない)
+ */
+function eventBox(title: string, body: string, buttons?: HTMLElement[]): HTMLElement {
   const box = document.createElement('div');
   box.className = 'event-box';
   const titleEl = document.createElement('p');
@@ -361,6 +370,12 @@ function eventBox(title: string, body: string): HTMLElement {
   bodyEl.className = 'stage-body-text';
   bodyEl.textContent = body;
   box.append(titleEl, bodyEl);
+  if (buttons && buttons.length > 0) {
+    const row = document.createElement('div');
+    row.className = 'event-box-actions';
+    row.append(...buttons);
+    box.append(row);
+  }
   return box;
 }
 
@@ -378,7 +393,12 @@ function renderStageBody(vm: ViewModel): void {
 
   if (s.kind === 'dungeon') {
     if (!s.event) return;
-    stageBody.append(eventBox(s.event.title, s.event.body));
+    // 二択 (alt を持つ occurrence) はここで両方のボタンを見せる。単一行動のイベントは
+    // 今までどおり操作列 (renderDungeonCluster) のボタン 1 つで解決する
+    const buttons = s.event.alt
+      ? [actionButton(s.event.action, { type: 'resolve' }, advancing), actionButton(s.event.alt, { type: 'resolve-alt' }, advancing)]
+      : undefined;
+    stageBody.append(eventBox(s.event.title, s.event.body, buttons));
     return;
   }
 
@@ -487,6 +507,8 @@ function renderIcons(vm: ViewModel): void {
     iconsEnemy.append(badge(e.bigLabel, e.bigCountdown === 1 ? 'warn' : ''));
     // ダウン攻撃の予告は大技と別色にする (down クラス)
     if (e.downLabel) iconsEnemy.append(badge(e.downLabel, 'down'));
+    // スタンの予告はさらに別色にする (stun クラス)。クールタイム制になったので予告に載せられる
+    if (e.stunLabel) iconsEnemy.append(badge(e.stunLabel, 'stun'));
     if (e.isBoss) iconsEnemy.append(badge('ボス', 'boss'));
   }
 }
@@ -512,7 +534,10 @@ function displaySlotCard(character: FormationCharacterView | null): HTMLElement 
   const sub = document.createElement('p');
   sub.className = 'slot-name';
   sub.textContent = character.faction;
-  div.append(name, sub);
+  const lv = document.createElement('p');
+  lv.className = 'slot-name';
+  lv.textContent = lvLabel(character);
+  div.append(name, sub, lv);
   return div;
 }
 
@@ -532,7 +557,10 @@ function tappableSlotCard(character: FormationCharacterView | null, onClick: () 
   const sub = document.createElement('p');
   sub.className = 'slot-name';
   sub.textContent = `${character.faction} / ${rarityLabel(character.rarity)}`;
-  b.append(name, sub);
+  const lv = document.createElement('p');
+  lv.className = 'slot-name';
+  lv.textContent = lvLabel(character);
+  b.append(name, sub, lv);
   return b;
 }
 
@@ -615,7 +643,7 @@ function buildPickerRow(c: FormationCharacterView & { placedSlot: number | null 
   primary.textContent = `${c.name} (${c.faction} / ${rarityLabel(c.rarity)})`;
   const sub = document.createElement('p');
   sub.className = 'card-sub';
-  sub.textContent = `攻撃 ${c.attack} ・ 体力 ${c.vitality}`;
+  sub.textContent = `${lvLabel(c)} ・ 攻撃 ${c.attack} ・ 体力 ${c.vitality}`;
   head.append(primary, sub);
   if (c.placedSlot !== null) {
     const placed = document.createElement('p');
@@ -733,7 +761,7 @@ function renderDetailModal(): void {
   scroll.className = 'modal-scroll';
   const stats = document.createElement('p');
   stats.className = 'card-sub';
-  stats.textContent = `攻撃 ${c.attack} ・ 体力 ${c.vitality}`;
+  stats.textContent = `${lvLabel(c)} ・ 攻撃 ${c.attack} ・ 体力 ${c.vitality}`;
   scroll.append(stats);
   if (c.placedSlot !== null && c.placedSlot !== undefined) {
     const placed = document.createElement('p');
@@ -922,12 +950,12 @@ function renderDungeonCluster(s: DungeonView): void {
   s.front.forEach((slot) => slotsEl.append(displaySlotCard(slot.character)));
 
   // 戦闘画面と同じ考え方で、キャラ枠の行の高さに操作を揃える。
-  // 上行 = 常用の「進む」(イベント解決中はその選択肢)、下行 = 引き返す・回復薬・編成
+  // 上行 = 常用の「進む」(単一行動のイベント解決中はその 1 つ)、下行 = 引き返す・回復薬・編成。
+  // 二択 (alt あり) はステージ側のウィンドウに出すので、ここには置かない (操作列に混ぜない)
   const primary = document.createElement('div');
   primary.className = 'controls-primary';
   if (s.event) {
-    primary.append(actionButton(s.event.action, { type: 'resolve' }, advancing));
-    if (s.event.alt) primary.append(actionButton(s.event.alt, { type: 'resolve-alt' }, advancing));
+    if (!s.event.alt) primary.append(actionButton(s.event.action, { type: 'resolve' }, advancing));
   } else {
     primary.append(navButton('進む', () => startAdvanceAnimation(toViewModel(state)), advancing));
   }
@@ -982,9 +1010,13 @@ function renderTownCluster(s: TownView): void {
     return;
   }
 
-  // 酒場・探索 (どちらもホームから 1 段掘り下げた先の一覧。酒場はタップして開く詳細を
-  // モーダル側で処理し、探索は一覧の各区画がそのまま出撃ボタンになるので、
-  // ここではどちらも「戻る」だけを置けばよい)
+  // 酒場だけ、引き直し (reroll-tavern) を操作列に足す。品揃えの一覧はステージ側 (renderTavernStage)
+  // に出ているので、ここには「引き直す・戻る」の 2 つだけでよい
+  if (page === 'tavern') {
+    controlsEl.append(actionButton(`引き直す (${s.rerollCost} G)`, { type: 'reroll-tavern' }, !s.rerollAffordable));
+  }
+
+  // 探索は一覧の各区画がそのまま出撃ボタンになるので、「戻る」だけを置けばよい
   controlsEl.append(navButton('戻る', () => {
     page = 'home';
     render();

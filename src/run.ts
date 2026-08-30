@@ -5,7 +5,7 @@
 
 import { partyMaxHp, type Fighter, type Party } from './battle';
 import { buildFighter, type CharacterEntry } from './data/characters';
-import { BOSS_ALT_EVENT, pickEvent, TOTAL_WEIGHT, type EventDef } from './data/events';
+import { BOSS_ALT_EVENT, decideOccurrence, pickEvent, TOTAL_WEIGHT, type EventDef } from './data/events';
 import { sectorById, type Sector } from './data/sectors';
 import { partyFromRosterAndFormation, type Formation } from './formation';
 import type { Rng } from './rng';
@@ -77,7 +77,9 @@ export function advance(run: RunState, rng: Rng): void {
     run.pending = BOSS_ALT_EVENT;
     return;
   }
-  run.pending = pickEvent(rng.int(0, TOTAL_WEIGHT - 1));
+  // 二択を持つ定義 (宝・泉) でも、実際に見せるかどうかは 2 割程度の確率でしか出さない
+  // (docs/plan.md「イベントの分岐」)。ボス前の分岐イベントはこの抽選を経ず必ず両方出す
+  run.pending = decideOccurrence(pickEvent(rng.int(0, TOTAL_WEIGHT - 1)), rng);
 }
 
 export function damage(run: RunState, amount: number): void {

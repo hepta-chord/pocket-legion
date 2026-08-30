@@ -166,6 +166,8 @@ function enemy(over: Partial<EnemyDef> = {}): EnemyDef {
     bigMul: 2,
     bigName: '大技',
     downEvery: null,
+    stunEvery: null,
+    stunRange: { min: 1, max: 1 },
     pattern: [{ kind: 'attack' }],
     groupSize: 1,
     isBoss: false,
@@ -173,9 +175,9 @@ function enemy(over: Partial<EnemyDef> = {}): EnemyDef {
   };
 }
 
-/** ボス。デフォルトでは大技・ダウン攻撃を起こさない間隔にしておき、テストごとに個別に短くする */
+/** ボス。デフォルトでは大技・ダウン攻撃・スタンを起こさない間隔にしておき、テストごとに個別に短くする */
 function boss(over: Partial<EnemyDef> = {}): EnemyDef {
-  return enemy({ isBoss: true, downEvery: null, ...over });
+  return enemy({ isBoss: true, downEvery: null, stunEvery: null, ...over });
 }
 
 function battleOf(front: Fighter[], reserve: Fighter[] = [], foe: EnemyDef = enemy(), rng: Rng = new Rng(1)) {
@@ -426,11 +428,10 @@ describe('スタン', () => {
     expect(swapMembers(state, [{ slot: 0, reserveId: 'c' }])).toBe(false);
   });
 
-  it('ボスのスタンがランダム人数を巻き込む', () => {
-    // ボスは通常行動を 2 回行うので、パターンがスタン 1 種類だけでも 1 ターンに 2 回スタンが入る。
-    // 1 回ごとに 2 人 (min=max=2) を選ぶが、2 回ぶんが重なるかどうかは乱数次第なので、
-    // 巻き込む人数は「2 人以上 4 人以下」の範囲になる (前衛は 4 人)
-    const foe = boss({ attack: 0, bigEvery: 99, pattern: [{ kind: 'stun', min: 2, max: 2 }] });
+  it('ボスのスタンが stunEvery のクールタイムでランダム人数を巻き込む', () => {
+    // スタンは大技・ダウン攻撃と同じクールタイム制。stunEvery 1 で毎ターン発動させ、
+    // stunRange (min=max=2) で必ず 2 人を巻き込むことを確かめる (前衛は 4 人)
+    const foe = boss({ attack: 0, bigEvery: 99, downEvery: null, stunEvery: 1, stunRange: { min: 2, max: 2 } });
     const state = battleOf(
       [fighter('a'), fighter('b'), fighter('c'), fighter('d')],
       [],
@@ -438,8 +439,24 @@ describe('スタン', () => {
     );
     endTurn(state, new Rng(3));
     const stunned = state.party.front.filter((f) => f && f.stunnedUntil >= state.turn);
-    expect(stunned.length).toBeGreaterThanOrEqual(2);
-    expect(stunned.length).toBeLessThanOrEqual(4);
+    expect(stunned.length).toBe(2);
+  });
+
+  it('大技・ダウン攻撃・スタンが重なったターンは大技を優先し、他のカウントダウンは持ち越す', () => {
+    // 3 つとも「あと 1」で重なる状況を作る。大技だけが発動し、ダウン攻撃・スタンの
+    // カウントダウンは減らないまま次ターンへ持ち越ること (docs/plan.md の優先順位)
+    const foe = boss({ attack: 0, bigEvery: 1, downEvery: 3, stunEvery: 3, stunRange: { min: 1, max: 1 } });
+    const state = battleOf([fighter('a')], [], foe);
+    expect(state.enemy.bigCountdown).toBe(1);
+    expect(state.enemy.downCountdown).toBe(3);
+    expect(state.enemy.stunCountdown).toBe(3);
+
+    endTurn(state, new Rng(1));
+
+    // 大技が発動してリセットされ、ダウン攻撃・スタンは 1 ターン前のまま (減っていない)
+    expect(state.enemy.bigCountdown).toBe(foe.bigEvery);
+    expect(state.enemy.downCountdown).toBe(3);
+    expect(state.enemy.stunCountdown).toBe(3);
   });
 
   it('stun-self エフェクトは発動者自身をスタンさせる', () => {
