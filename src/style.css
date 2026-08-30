@@ -51,13 +51,17 @@ button:active:not(:disabled) {
 }
 
 /* ---------------------------------------------------------------------- */
-/* 全画面の骨格。100dvh に収め、スクロールを出さない。
+/* 全画面の骨格。100svh (小さいほうのビューポート) に収め、スクロールを出さない。
+   モバイル Safari はツールバーの出入りで 100dvh がその都度変わり、場面ごとに
+   レイアウトが動く原因になるので、ツールバーが出ていても収まる高さで固定する。
+   svh 未対応環境向けに 100vh を先に書いてフォールバックにしておく。
    縦が足りない環境ではステージ (flex: 1) だけを潰して吸収する */
 
 #app {
   display: flex;
   flex-direction: column;
-  height: 100dvh;
+  height: 100vh;
+  height: 100svh;
   max-width: 480px;
   margin: 0 auto;
   padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
@@ -156,9 +160,15 @@ button:active:not(:disabled) {
 }
 
 /* ステージ。flex: 1 で残り全部を取り、縦が足りなければここが潰れる。
-   min-height: 0 が無いと flex item は内容ぶんの高さを主張してスクロールの原因になる */
+   min-height: 0 が無いと flex item は内容ぶんの高さを主張してスクロールの原因になる。
+   #corridor (通路の canvas) は固定の縦横比を持つ唯一の通常フローの子なので、
+   display:flex + center で余った分を上下左右に均等な余白として振り、中央に置く。
+   ポートレート・stage-body・状態アイコンは position:absolute で抜けているので影響しない */
 #stage {
   position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   flex: 1 1 auto;
   min-height: 0;
   border: 1px solid var(--line);
@@ -167,10 +177,14 @@ button:active:not(:disabled) {
   overflow: hidden;
 }
 
+/* 縦横比は文字グリッド (CORRIDOR_SIZE と CHAR_ASPECT) から決まる固定値。
+   canvas は replaced element なので、aspect-ratio + max-width/max-height:100% だけで
+   img と同じ contain 収まりになり、ステージの高さが変わっても絵の形は崩れず
+   大きさだけが変わる。実際の比率値は text-renderer.ts が起動時に inline style で与える */
 #corridor {
   display: none;
-  width: 100%;
-  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
 }
 
 #stage[data-screen='dungeon'] #corridor {
