@@ -207,6 +207,7 @@ describe('戦闘への遷移', () => {
       def: {
         id: 'test-sacrifice',
         name: 'テスト代償',
+        shortName: '代償',
         category: 'ultimate',
         baseCost: 0,
         effect: { kind: 'attack', target: 'one', power: 1 },
@@ -258,12 +259,12 @@ describe('大技 1 ターン前のアナウンス', () => {
     forceBattleEvent(state, 'battle');
     step(state, { type: 'resolve' });
     const b = state.battle!;
-    b.enemy.countdown = 2;
+    b.enemy.bigCountdown = 2;
 
     step(state, { type: 'battle-end-turn' });
 
     expect(state.battle?.outcome).toBe('ongoing');
-    expect(state.battle?.enemy.countdown).toBe(1);
+    expect(state.battle?.enemy.bigCountdown).toBe(1);
     const vm = toViewModel(state);
     expect(vm.log.some((l) => l.kind === 'warn' && l.text.includes('力を溜めている'))).toBe(true);
   });
@@ -274,11 +275,11 @@ describe('大技 1 ターン前のアナウンス', () => {
     forceBattleEvent(state, 'battle');
     step(state, { type: 'resolve' });
     const b = state.battle!;
-    b.enemy.countdown = 5;
+    b.enemy.bigCountdown = 5;
 
     step(state, { type: 'battle-end-turn' });
 
-    expect(state.battle?.enemy.countdown).toBe(4);
+    expect(state.battle?.enemy.bigCountdown).toBe(4);
     const vm = toViewModel(state);
     expect(vm.log.some((l) => l.text.includes('力を溜めている'))).toBe(false);
   });
