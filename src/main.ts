@@ -43,7 +43,7 @@ if (loaded.discarded) addLog(state, 'info', '前のセーブは形式が古い�
 // 理由: セーブしたい「進行」ではなく「今どの画面を見ているか」でしかなく、
 // リロードすれば拠点トップやダンジョンの通常画面に戻ってもプレイヤーは困らないため。
 // (docs/plan.md 4 節の「main.ts のローカル状態にしてもよい」を選んだ)
-type TownPage = 'home' | 'dungeon-list' | 'tavern' | 'formation';
+type TownPage = 'home' | 'tavern' | 'formation';
 let page: TownPage = 'home';
 let dungeonFormationOpen = false;
 
@@ -201,20 +201,51 @@ function renderStatus(vm: ViewModel): void {
 // ---------------------------------------------------------------------------
 // ステージ本体 (拠点・ダンジョンのイベント・結果)。戦闘は #portrait 側が受け持つ
 
-// ホーム・迷宮一覧は選択肢を操作クラスタ側に持つので、ここでは短い見出しだけ出す。
+// 拠点のトップ (行き先の一覧)。迷宮 (浅層・中層・深層) と酒場を同じ一覧に並べ、
+// 探索でイベントを解決するのと同じ位置・同じ操作感にする (ドリルダウンはやめる)。
 // ステージの奥にはロビー (迷宮都市) の情景が常に見えている (renderPortrait 側)
-function renderHomeStage(): void {
+function renderHomeStage(s: TownView): void {
   const head = document.createElement('p');
   head.className = 'lead';
   head.textContent = 'どこへ行く?';
   stageBody.append(head);
-}
 
-function renderDungeonListStage(): void {
-  const head = document.createElement('p');
-  head.className = 'lead';
-  head.textContent = 'どの迷宮へ?';
-  stageBody.append(head);
+  const list = document.createElement('div');
+  list.className = 'list';
+
+  for (const sec of s.sectors) {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'card card-tappable';
+    card.disabled = !sec.unlocked;
+    const name = document.createElement('p');
+    name.className = 'card-name';
+    name.textContent = sec.unlocked ? sec.name : `${sec.name} (未開放)`;
+    const sub = document.createElement('p');
+    sub.className = 'card-sub';
+    sub.textContent = `深度 ${sec.depth} まで`;
+    card.append(name, sub);
+    if (sec.unlocked) card.addEventListener('click', () => act({ type: 'sortie', sectorId: sec.id }));
+    list.append(card);
+  }
+
+  const tavernCard = document.createElement('button');
+  tavernCard.type = 'button';
+  tavernCard.className = 'card card-tappable';
+  const tavernName = document.createElement('p');
+  tavernName.className = 'card-name';
+  tavernName.textContent = '酒場';
+  const tavernSub = document.createElement('p');
+  tavernSub.className = 'card-sub';
+  tavernSub.textContent = `雇える顔ぶれ ${s.tavern.length} 人`;
+  tavernCard.append(tavernName, tavernSub);
+  tavernCard.addEventListener('click', () => {
+    page = 'tavern';
+    render();
+  });
+  list.append(tavernCard);
+
+  stageBody.append(list);
 }
 
 function renderTavernStage(s: TownView): void {
@@ -269,7 +300,7 @@ function renderFormationStage(s: TownView): void {
   note.className = 'body';
   note.textContent = s.formation.auto
     ? '未設定なので、所持キャラの先頭から自動で詰めている。スロットをタップして選び直せる。'
-    : '控えは前衛に選ばれなかった roster 全員が自動で務める。スロットをタップして入れ替える。';
+    : '控えは前衛に選ばれなかった所持キャラ全員が自動で務める。スロットをタップして入れ替える。';
   stageBody.append(note);
 }
 
@@ -292,8 +323,7 @@ function renderStageBody(vm: ViewModel): void {
   const s = vm.screen;
 
   if (s.kind === 'town') {
-    if (page === 'home') renderHomeStage();
-    else if (page === 'dungeon-list') renderDungeonListStage();
+    if (page === 'home') renderHomeStage(s);
     else if (page === 'tavern') renderTavernStage(s);
     else renderFormationStage(s);
     return;
@@ -890,52 +920,23 @@ function renderTownCluster(s: TownView): void {
   s.formation.slots.forEach((slot) => slotsEl.append(displaySlotCard(slot.character)));
 
   if (page === 'home') {
-    // 上行 (キャラ枠 1 行目) に主たる行き先の「迷宮」を大きく、
-    // 下行 (2 行目) に「酒場」「編成」を並べる。編成がキャラ枠のすぐ右に来るので、
-    // 編集する対象 (前衛の顔ぶれ) と開くボタンが隣り合う
+    // 操作列は全画面で同じ並びを保つ。拠点でも探索と同じボタン (進む/引き返す/回復薬/編成) を
+    // 同じ位置に置き、拠点で使えないもの (進む・引き返す・回復薬) はグレーアウトする。
+    // 行き先はステージ側の一覧 (renderHomeStage) から選ぶので、ここでの役目は編成だけになる
     const primary = document.createElement('div');
     primary.className = 'controls-primary';
-    primary.append(navButton('迷宮', () => {
-      page = 'dungeon-list';
-      render();
-    }));
+    primary.append(navButton('進む', () => {}, true));
     controlsEl.append(primary);
 
     const secondary = document.createElement('div');
     secondary.className = 'controls-secondary';
-    secondary.append(navButton('酒場', () => {
-      page = 'tavern';
-      render();
-    }));
+    secondary.append(actionButton('引き返す', { type: 'retreat' }, true));
+    secondary.append(actionButton(`回復薬 (${s.potions})`, { type: 'potion' }, true));
     secondary.append(navButton('編成', () => {
       page = 'formation';
       render();
     }));
     controlsEl.append(secondary);
-    return;
-  }
-
-  if (page === 'dungeon-list') {
-    // 一覧の項目と「戻る」を同じ操作列に置き、キャラ枠の行の高さに揃える。
-    // 項目数がいくつでも上下半分に分かれるよう、前半を上行・残り (戻るを含む) を下行に置く
-    const primary = document.createElement('div');
-    primary.className = 'controls-primary';
-    const secondary = document.createElement('div');
-    secondary.className = 'controls-secondary';
-    const half = Math.ceil(s.sectors.length / 2);
-    s.sectors.forEach((sec, i) => {
-      const btn = actionButton(
-        `${sec.name} (深度 ${sec.depth})${sec.unlocked ? '' : ' — 未開放'}`,
-        { type: 'sortie', sectorId: sec.id },
-        !sec.unlocked,
-      );
-      (i < half ? primary : secondary).append(btn);
-    });
-    secondary.append(navButton('戻る', () => {
-      page = 'home';
-      render();
-    }));
-    controlsEl.append(primary, secondary);
     return;
   }
 
