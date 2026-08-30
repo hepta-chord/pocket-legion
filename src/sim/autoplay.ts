@@ -39,7 +39,7 @@ import {
   type SwapMove,
 } from '../battle';
 import { buildFighter, CHARACTERS, withLevel, type CharacterEntry } from '../data/characters';
-import { generateCommon } from '../data/common-gen';
+import { generateCommon, generateRare } from '../data/common-gen';
 import { makeBoss, makeFoe } from '../data/enemies';
 import { FACTION_HIRE_CAP, FACTION_WEIGHT, FACTIONS, type Faction } from '../data/factions';
 import { sectorById } from '../data/sectors';
@@ -239,8 +239,6 @@ export function playSortie(sectorId: number, rng: Rng, assumedLevel: number, ass
   const mate = withLevel(CHARACTERS.find((c) => c.id === 'mate')!, assumedLevel);
   const aide2 = withLevel(CHARACTERS.find((c) => c.id === 'aide2')!, assumedLevel);
   const startCommons = generateAssumedOwned(rng, assumedLevel, Math.max(0, assumedOwnedCount - 3));
-  // レアは有限 (r1〜r4 の 4 人) なので、ボス前の分岐で引いた分だけ所持 id を追う
-  const ownedRareIds = new Set<string>();
   const initial: CharacterEntry[] = [hero, mate, aide2, ...startCommons];
   // 所持ベースの陣営倍率は出撃時に一度だけ確定させる。以降の recruit・レア加入も
   // この時点の合算 (initialTotals) を近似の土台にする (加入のたびに数え直すほどの精度は測定に要らない)
@@ -295,22 +293,19 @@ export function playSortie(sectorId: number, rng: Rng, assumedLevel: number, ass
   }
 
   // ボス前の分岐イベント。HP が 6 割未満なら回復、以上ならレア加入を選ぶ。
-  // source: 'dungeon' の未所持レアだけが対象 (game.ts の unownedRares と同じ絞り込み)。
-  // 固定の 3 人 (hero/mate/aide2) は source を持たないので、ここでは自然に除外される
+  // レアは固定の名簿を持たずその場で生成する (docs/plan.md「レアリティと入手」) ので、
+  // 「尽きて選べない」分岐は無く、必ず 1 人加入する
   if (hp < maxHp * 0.6) {
     hp = maxHp;
     resetSortieProgress(party);
   } else {
-    const rareCandidates = CHARACTERS.filter((c) => c.rarity === 'rare' && c.source === 'dungeon' && !ownedRareIds.has(c.id));
-    if (rareCandidates.length > 0) {
-      const picked = withLevel(rng.pick(rareCandidates), assumedLevel);
-      ownedRareIds.add(picked.id);
-      const fighter = buildFighter(picked, factionMultiplier(initialTotals, picked.faction));
-      const idx = party.front.findIndex((f) => f === null);
-      if (idx >= 0) party.front[idx] = fighter;
-      else party.reserve.push(fighter);
-      maxHp = partyMaxHp(party);
-    }
+    const faction = rng.pick(FACTIONS);
+    const picked = withLevel(generateRare(faction, rng, simCommonSerial++), assumedLevel);
+    const fighter = buildFighter(picked, factionMultiplier(initialTotals, faction));
+    const idx = party.front.findIndex((f) => f === null);
+    if (idx >= 0) party.front[idx] = fighter;
+    else party.reserve.push(fighter);
+    maxHp = partyMaxHp(party);
   }
 
   // 区画の最深部のボス。雑魚と違って長期戦になるので、上限もターン数も別に持つ

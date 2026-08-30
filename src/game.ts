@@ -11,6 +11,7 @@ import {
   effectiveFighterAttack,
   effectiveFighterVitality,
   endTurn,
+  goldRateBonus,
   logBattle,
   MANA_CAP,
   refillFront,
@@ -36,7 +37,7 @@ import {
   skillLabels,
   type CharacterEntry,
 } from './data/characters';
-import { generateCommon, NAME_POOLS } from './data/common-gen';
+import { generateCommon, generateRare, NAME_POOLS, rerollContent } from './data/common-gen';
 import { CORPSE_TRAP_CHANCE, NOTHING_TRAP_CHANCE, TREASURE_POTION_CHANCE, TREASURE_TRAP_CHANCE } from './data/events';
 import { FACTION_HIRE_CAP, FACTION_NAMES, FACTION_WEIGHT, FACTIONS, type Faction } from './data/factions';
 import { makeBoss, makeFoe } from './data/enemies';
@@ -81,8 +82,11 @@ import type {
 } from './view';
 
 // レベル・成長カーブ・酒場の引き直し賃料などを GameState/CharacterEntry に足したので、
-// 古いセーブと噛み合わなくなる。区切りを上げて捨てる
-export const SAVE_VERSION = 11;
+// 古いセーブと噛み合わなくなる。区切りを上げて捨てる。
+// 11 -> 12: レアの生成化 (r1〜r4・source 廃止) とネームド (rarity: 'named') の追加で
+// 旧セーブの個体定義が食い違うため。生成キャラはスキル定義ごとセーブに保存されるので、
+// 候補群から消しても個体には残ってしまう「泉脈の残存」と同じ理由 (docs/plan.md「決定済みの設計判断」)
+export const SAVE_VERSION = 12;
 
 /** 回復薬の所持上限 */
 const POTION_MAX = 3;
@@ -133,6 +137,8 @@ export type Action =
   | { type: 'reroll-tavern' }
   /** 道具屋で回復薬を 1 個買う。値段は state.potionPrice */
   | { type: 'buy-potion' }
+  /** 転生所。名前・陣営・id を保ったまま中身を同じレアリティの生成プールで引き直す (ネームドは不可) */
+  | { type: 'rebirth'; charId: string }
   | { type: 'potion' }
   /** 拠点の編成画面。所持キャラの一覧から前衛スロットへ配置する。id が null ならそのスロットを空にする */
   | { type: 'formation-set'; slot: number; id: string | null }
@@ -173,6 +179,8 @@ export interface GameState {
    * ゲームの結果には影響しない
    */
   nextCommonId: number;
+  /** 次に生成するレアへ振る通し番号 (`rare-N`)。nextCommonId と同じ役目 */
+  nextRareId: number;
   /**
    * 前衛の編成。長さ 6 固定、値は owned の id か空きを示す null。
    * デッキは絞らないので、控えは前衛に選ばれなかった owned 全員が自動で務める。
@@ -189,7 +197,7 @@ export interface GameState {
    */
   formationTouched: boolean;
   /**
-   * 今の酒場の品揃え (最大 3 人)。生成コモンに加え、低確率で未所持レア (source: 'tavern') を混ぜる。
+   * 今の酒場の品揃え (最大 3 人)。生成コモンに加え、低確率で generateRare が生成したレアを混ぜる。
    * 生成した個体そのものを持つので、雇うとそのまま owned に移せる
    */
   tavern: CharacterEntry[];
@@ -221,22 +229,12 @@ export interface GameState {
 
 const LOG_LIMIT = 8;
 
-/** source に一致する、まだ所持していないレアの一覧 */
-function unownedRares(owned: readonly CharacterEntry[], source: 'tavern' | 'dungeon'): CharacterEntry[] {
-  const ownedIds = new Set(owned.map((c) => c.id));
-  return CHARACTERS.filter((c) => c.rarity === 'rare' && c.source === source && !ownedIds.has(c.id));
-}
-
-function hasUnownedRare(owned: readonly CharacterEntry[], source: 'tavern' | 'dungeon'): boolean {
-  return unownedRares(owned, source).length > 0;
-}
-
-/** 固定の 3 人 (コーモン・スケサン・カクサン) の id。所持から外れず、雇用の上限にも数えない */
-const FIXED_MEMBER_IDS = new Set(['hero', 'mate', 'aide2']);
-
-/** 陣営ごとの所持人数。固定の 3 人は最初からいる例外で、雇用の上限には数えない */
+/**
+ * 陣営ごとの所持人数。ネームド (rarity: 'named') は最初からいる例外で、雇用の上限には数えない
+ * (docs/plan.md「初期の 2 人」)
+ */
 function factionCount(owned: readonly CharacterEntry[], faction: Faction): number {
-  return owned.filter((c) => c.faction === faction && !FIXED_MEMBER_IDS.has(c.id)).length;
+  return owned.filter((c) => c.faction === faction && c.rarity !== 'named').length;
 }
 
 /** まだ雇用の上限に達していない陣営の一覧。上限に達した陣営は酒場の抽選から外す */
@@ -252,11 +250,11 @@ function hasFreeName(faction: Faction, usedNames: ReadonlySet<string>): boolean 
 /**
  * 酒場の抽選で誰も並べられない状態か。雇用の上限に達した陣営に加えて、
  * 名前の候補が (所持済みぶんも合わせて) 尽きた陣営も対象から外れる。
- * 未所持の酒場限定レアも無ければ、引き直しても誰も出てこない
+ * レアもコモンと同じくその場で生成するので (docs/plan.md「レアリティと入手」)、
+ * 「未所持レアの在庫が無い」という概念は無く、陣営が出せるかどうかだけで決まる
  * (不具合の修正: 所持済みキャラの名前が酒場の候補から除かれていなかった)
  */
 function tavernExhausted(owned: readonly CharacterEntry[]): boolean {
-  if (hasUnownedRare(owned, 'tavern')) return false;
   const usedNames = new Set(owned.map((c) => c.name));
   return FACTIONS.every((f) => factionCount(owned, f) >= FACTION_HIRE_CAP[f] || !hasFreeName(f, usedNames));
 }
@@ -308,10 +306,30 @@ function pickCommonAvoidingDuplicates(
   return generateCommon(faction, rng, state.nextCommonId++);
 }
 
+/** レアを 1 人生成する。名前の重複回避の規則は pickCommonAvoidingDuplicates と同じ */
+function pickRareAvoidingDuplicates(
+  state: GameState,
+  rng: Rng,
+  usedNames: ReadonlySet<string>,
+  usedFactions: ReadonlySet<Faction>,
+  available: readonly Faction[],
+): CharacterEntry {
+  const freshFactions = available.filter((f) => !usedFactions.has(f));
+  const factionPool = freshFactions.length > 0 ? freshFactions : available;
+  const faction = weightedFaction(rng, factionPool);
+
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const candidate = generateRare(faction, rng, state.nextRareId++);
+    if (!usedNames.has(candidate.name)) return candidate;
+  }
+  return generateRare(faction, rng, state.nextRareId++);
+}
+
 /**
  * 酒場の品揃えを引き直す。コモンはその場で生成し (陣営は人口比の重みでランダム、
- * ただし品揃え内で散らす)、低確率 (TAVERN_RARE_CHANCE) で source: 'tavern' の未所持レアに
- * 差し替える。レア・コモンを問わず、酒場の 1 回の品揃えの中で同じ人・同じ名前が重複しないようにし、
+ * ただし品揃え内で散らす)、低確率 (TAVERN_RARE_CHANCE) でレアもその場で生成する
+ * (docs/plan.md「レアリティと入手」。固定レアの名簿は持たない)。
+ * レア・コモンを問わず、酒場の 1 回の品揃えの中で同じ名前が重複しないようにし、
  * 雇用の上限に達した陣営は並ばせない (達していれば TAVERN_SIZE 未満で終わることもある)。
  * 並ぶ個体の初期レベルもここでランダムに振る。
  *
@@ -321,31 +339,22 @@ function pickCommonAvoidingDuplicates(
  */
 function rerollTavern(state: GameState, rng: Rng): void {
   const picked: CharacterEntry[] = [];
-  const usedRareIds = new Set<string>();
   const usedNames = new Set<string>(state.owned.map((c) => c.name));
   const usedFactions = new Set<Faction>();
   for (let i = 0; i < TAVERN_SIZE; i++) {
-    const rareCandidates = unownedRares(state.owned, 'tavern').filter(
-      (c) => !usedRareIds.has(c.id) && factionCount(state.owned, c.faction) < FACTION_HIRE_CAP[c.faction],
-    );
-    if (rareCandidates.length > 0 && rng.chance(TAVERN_RARE_CHANCE)) {
-      const rare = instantiate(rng.pick(rareCandidates));
-      rare.level = rollTavernLevel(rng, state.unlocked, rare.maxLevel);
-      usedRareIds.add(rare.id);
-      usedNames.add(rare.name);
-      usedFactions.add(rare.faction);
-      picked.push(rare);
-      continue;
-    }
     // 雇用の上限に達した陣営に加えて、名前の候補が (所持済みぶんも合わせて) 尽きた陣営も外す
     // (不具合の修正)。雇用上限を外すのと同じ扱いにする
     const available = availableFactions(state.owned).filter((f) => hasFreeName(f, usedNames));
     if (available.length === 0) break; // 誰も並べられない。品揃えが減る (最悪 0 人になる)
-    const common = pickCommonAvoidingDuplicates(state, rng, usedNames, usedFactions, available);
-    common.level = rollTavernLevel(rng, state.unlocked, common.maxLevel);
-    usedNames.add(common.name);
-    usedFactions.add(common.faction);
-    picked.push(common);
+
+    const entry =
+      rng.chance(TAVERN_RARE_CHANCE)
+        ? pickRareAvoidingDuplicates(state, rng, usedNames, usedFactions, available)
+        : pickCommonAvoidingDuplicates(state, rng, usedNames, usedFactions, available);
+    entry.level = rollTavernLevel(rng, state.unlocked, entry.maxLevel);
+    usedNames.add(entry.name);
+    usedFactions.add(entry.faction);
+    picked.push(entry);
   }
   state.tavern = picked;
 }
@@ -363,6 +372,7 @@ export function newGame(seed: string): GameState {
     potions: START_POTIONS,
     owned: [hero, mate, aide2],
     nextCommonId: 1,
+    nextRareId: 1,
     formation: emptyFormation(),
     formationTouched: false,
     tavern: [],
@@ -477,14 +487,15 @@ function resolveBossAltHeal(run: RunState): string {
 }
 
 /**
- * ボス前の分岐イベント「レアを迎える」。source: 'dungeon' の未所持レアから 1 人選び、
+ * ボス前の分岐イベント「レアを迎える」。必ず generateRare でその場に 1 人生成し、
  * owned とデッキに入れる (docs/plan.md「レアリティと入手」)。
- * CHARACTERS の共有オブジェクトをそのまま積まないよう instantiate() でコピーする
+ * 未所持レアの在庫という概念は無くなったので、雇用上限に空きがある限り必ず出せる。
+ * 陣営は雇用可能な陣営から人口比の重みで抽選する
  */
 function resolveBossAltRare(state: GameState, run: RunState, rng: Rng): string {
-  const candidates = unownedRares(state.owned, 'dungeon');
-  if (candidates.length === 0) return resolveBossAltHeal(run);
-  const picked = instantiate(rng.pick(candidates));
+  const available = availableFactions(state.owned);
+  const usedNames = new Set(state.owned.map((c) => c.name));
+  const picked = pickRareAvoidingDuplicates(state, rng, usedNames, new Set(), available.length > 0 ? available : FACTIONS);
   state.owned.push(picked);
   addToDeck(run, picked, state.owned);
   return `${picked.name} が仲間になった。`;
@@ -643,7 +654,7 @@ function settleBattle(state: GameState, run: RunState, rng: Rng): void {
     const kind = state.battleKind;
     const normalGold = Math.round(rng.int(40, 90) * scale);
     // 隊商を襲って勝ったときは、通常の雑魚戦の報酬に金を上乗せする (docs/plan.md「アイテム」)
-    const gold =
+    const baseGold =
       kind === 'boss'
         ? Math.round(rng.int(400, 700) * scale)
         : kind === 'elite'
@@ -651,6 +662,8 @@ function settleBattle(state: GameState, run: RunState, rng: Rng): void {
           : kind === 'caravan'
             ? normalGold + Math.round((CARAVAN_RAID_GOLD_BASE + run.depth * CARAVAN_RAID_GOLD_PER_DEPTH) * (0.8 + 0.4 * rng.next()))
             : normalGold;
+    // 商才 (goldRate) パッシブを前衛に持つほど獲得金が増える (docs/plan.md「デメリットスキル」寄りのパッシブ)
+    const gold = Math.round(baseGold * (1 + goldRateBonus(run.party)));
     run.gold += gold;
     addLog(state, 'good', `${gold} G を得た。`);
     if (kind === 'caravan') {
@@ -789,7 +802,8 @@ export function step(state: GameState, action: Action): void {
       if (!run.pending) break;
       switch (run.pending.kind) {
         case 'boss-alt': {
-          if (!hasUnownedRare(state.owned, 'dungeon')) break;
+          // 未所持レアの在庫という概念は無く、必ず generateRare でその場に出す
+          // (docs/plan.md「レアリティと入手」)
           run.pending = null;
           addLog(state, 'good', resolveBossAltRare(state, run, rng));
           break;
@@ -886,6 +900,21 @@ export function step(state: GameState, action: Action): void {
       state.potions += 1;
       state.potionPrice = Math.round(state.potionPrice * POTION_PRICE_RAISE);
       addLog(state, 'good', '回復薬を買った。');
+      break;
+    }
+
+    case 'rebirth': {
+      // 拠点の施設なので出撃中は使えない (docs/plan.md「転生所」)
+      if (state.run || state.battle) break;
+      const entry = state.owned.find((c) => c.id === action.charId);
+      if (!entry || entry.rarity === 'named') break;
+      const price = Math.floor(priceOf(entry) / 2);
+      if (state.gold < price) break;
+      state.gold -= price;
+      // 名前・陣営・id を保ったまま、基礎値・成長・スキルを同じレアリティの生成プールで引き直す
+      const rerolled = rerollContent(entry, rng);
+      Object.assign(entry, rerolled);
+      addLog(state, 'good', `${entry.name} を転生させた。`);
       break;
     }
 
@@ -1014,8 +1043,12 @@ function skillCategoryLabel(category: SkillCategory): string {
 function skillEffectText(def: ActionSkillDef): string {
   const e = def.effect;
   switch (e.kind) {
-    case 'attack':
-      return e.target === 'all' ? `敵全体に威力 ${e.power.toFixed(1)} の攻撃` : `敵に威力 ${e.power.toFixed(1)} の攻撃`;
+    case 'attack': {
+      const hitsNote = e.hits && e.hits > 1 ? ` × ${e.hits} 回` : '';
+      return e.target === 'all'
+        ? `敵全体に威力 ${e.power.toFixed(1)}${hitsNote} の攻撃`
+        : `敵に威力 ${e.power.toFixed(1)}${hitsNote} の攻撃`;
+    }
     case 'heal':
       return `HP を最大値の ${Math.round(e.power * 100)}% 回復`;
     case 'cheer':
@@ -1023,9 +1056,13 @@ function skillEffectText(def: ActionSkillDef): string {
     case 'ward':
       return `ガードを ${e.stacks} 枚積む (1 枚につき被ダメージ -20%、3 枚まで)`;
     case 'barrier':
-      return '次に来る敵の攻撃を 1 回無効化';
-    case 'dispel':
-      return '敵の鼓舞・ガードのスタックを 1 回で全部剥がす';
+      return '次に来る敵の攻撃系の行動の先頭ヒットだけを無効化';
+    case 'dispel': {
+      const hitNote = e.power ? `威力 ${e.power.toFixed(1)} の攻撃を入れてから、` : '';
+      return e.scope === 'all'
+        ? `${hitNote}敵の鼓舞・ガードのスタックを全部剥がす`
+        : `${hitNote}敵の鼓舞・ガードからランダムに 1 枚剥がす`;
+    }
     case 'stun-self':
       return '代償として自分がその場でスタンする';
     case 'mana':
@@ -1051,6 +1088,7 @@ function passiveEffectText(p: PassiveDef): string {
   if (h.defenseRate) parts.push(`防御軽減率 ${h.defenseRate > 0 ? '+' : ''}${Math.round(h.defenseRate * 100)}%`);
   if (h.telegraph) parts.push(`大技・ダウン攻撃の予告 ${h.telegraph > 0 ? '+' : ''}${h.telegraph} ターン`);
   if (h.cover) parts.push('ボスの大技を前衛にいる間、身代わりする');
+  if (h.goldRate) parts.push(`戦闘勝利時の獲得金 ${h.goldRate > 0 ? '+' : ''}${Math.round(h.goldRate * 100)}%`);
   return parts.length > 0 ? parts.join('・') : '効果なし';
 }
 
@@ -1214,9 +1252,10 @@ function toDungeonView(run: RunState, potions: number, owned: readonly Character
           title: run.pending.title,
           body: run.pending.body,
           action: run.pending.action,
-          // boss-alt だけ、未所持レアが尽きていれば二択自体を隠す。他のイベント (宝・泉) は
-          // 二択の抽選 (ALT_CHANCE) を run.ts 側で既に済ませてあるので、altAction をそのまま出す
-          alt: run.pending.kind === 'boss-alt' ? (hasUnownedRare(owned, 'dungeon') ? run.pending.altAction : undefined) : run.pending.altAction,
+          // boss-alt も含め、二択は常に両方見せる (未所持レアの在庫という概念が無くなったため)。
+          // 他のイベント (宝・泉) は二択の抽選 (ALT_CHANCE) を run.ts 側で既に済ませてあるので、
+          // altAction をそのまま出す
+          alt: run.pending.altAction,
         }
       : null;
   return {
@@ -1289,6 +1328,14 @@ function toTownView(state: GameState): TownView {
     potionBuyable: state.potions < POTION_MAX && state.gold >= state.potionPrice,
     roster: state.owned.map((entry) => characterCard(entry, factionMultiplierOf(totals, entry))),
     formation,
+    // 転生所 (docs/plan.md「転生所」)。ネームドは対象から外す (固有の性能そのものが個性のため)。
+    // 費用は雇用価格の半額
+    rebirth: state.owned
+      .filter((entry) => entry.rarity !== 'named')
+      .map((entry) => {
+        const price = Math.floor(priceOf(entry) / 2);
+        return { ...characterCard(entry, factionMultiplierOf(totals, entry)), price, affordable: state.gold >= price };
+      }),
   };
 }
 
