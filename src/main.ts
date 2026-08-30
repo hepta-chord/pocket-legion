@@ -71,14 +71,17 @@ let picker: PickerConfig | null = null;
 let pickerFactionFilter: 'all' | Faction = 'all';
 
 /**
- * タップして開く詳細ポップアップ (モーダル)。編成・交代のピッカー行と酒場のカードが共有する。
- * 実行ボタンのラベルと挙動だけが呼び出し側で違う (配置 / 雇用)。null なら閉じている
+ * タップして開く詳細ポップアップ (モーダル)。編成・交代のピッカー行、酒場のカード、
+ * 埋まっている編成スロット、探索・拠点のキャラ枠が共有する。
+ * 実行ボタンのラベルと挙動だけが呼び出し側で違う (配置 / 雇用 / 別の人に替える)。
+ * actionLabel を省略すると実行ボタンを出さず「閉じる」だけの見るだけ表示になる
+ * (探索・拠点のキャラ枠のように、詳細を確かめるだけで何も実行しない場合)。null なら閉じている
  */
 interface DetailModalConfig {
   row: FormationCharacterView & { placedSlot?: number | null };
-  actionLabel: string;
+  actionLabel?: string;
   actionDisabled?: boolean;
-  onAction: () => void;
+  onAction?: () => void;
 }
 let activeDetail: DetailModalConfig | null = null;
 
@@ -578,11 +581,20 @@ function emptySlotCard(label = '空き'): HTMLElement {
   return div;
 }
 
-/** ダンジョン探索中の表示専用カード。タップしても何も起きない (docs/plan.md 3 節) */
+/**
+ * ダンジョン探索中・拠点の表示専用カード。編成はここからは変えられないが、
+ * キャラが入っていればタップで詳細ポップアップ (見るだけ、実行ボタンは無し) を開く。
+ * 誰が何を持っているかを、どの画面からでも確かめられるようにするため (docs/plan.md「編成画面」)
+ */
 function displaySlotCard(character: FormationCharacterView | null): HTMLElement {
   if (!character) return emptySlotCard();
-  const div = document.createElement('div');
-  div.className = 'slot-card';
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'slot-card selectable';
+  b.addEventListener('click', () => {
+    activeDetail = { row: character };
+    render();
+  });
   const name = document.createElement('p');
   name.className = 'slot-name';
   name.textContent = character.name;
@@ -597,18 +609,23 @@ function displaySlotCard(character: FormationCharacterView | null): HTMLElement 
   const atk = document.createElement('p');
   atk.className = 'slot-name';
   atk.textContent = `攻撃 ${character.attack}`;
-  div.append(name, sub, lv, atk);
-  return div;
+  b.append(name, sub, lv, atk);
+  return b;
 }
 
-/** 編成 (拠点・ダンジョン内) のスロット。カード全体がボタンで、タップでピッカーを開く */
-function tappableSlotCard(character: FormationCharacterView | null, onClick: () => void): HTMLElement {
+/**
+ * 編成 (拠点・ダンジョン内) のスロット。空きスロットはタップで候補一覧 (ピッカー) を開く。
+ * 既に誰か入っているスロットは、タップでまずその人の詳細ポップアップを開く
+ * (ボタンは「別の人に替える」でピッカーへ進む / 「閉じる」)。誤操作で編成を崩さないためと、
+ * 育っているかどうかを編成の動線の中で確かめられるようにするため (docs/plan.md「編成画面」)
+ */
+function tappableSlotCard(character: FormationCharacterView | null, openPicker: () => void): HTMLElement {
   const b = document.createElement('button');
   b.type = 'button';
   b.className = 'slot-card selectable' + (character ? '' : ' empty');
-  b.addEventListener('click', onClick);
   if (!character) {
     b.textContent = '空き (タップ)';
+    b.addEventListener('click', openPicker);
     return b;
   }
   const name = document.createElement('p');
@@ -621,6 +638,14 @@ function tappableSlotCard(character: FormationCharacterView | null, onClick: () 
   lv.className = 'slot-name';
   lv.textContent = lvLabel(character);
   b.append(name, sub, lv);
+  b.addEventListener('click', () => {
+    activeDetail = {
+      row: character,
+      actionLabel: '別の人に替える',
+      onAction: openPicker,
+    };
+    render();
+  });
   return b;
 }
 
@@ -846,14 +871,19 @@ function renderDetailModal(): void {
 
   const actions = document.createElement('div');
   actions.className = 'modal-actions';
-  const primary = document.createElement('button');
-  primary.type = 'button';
-  primary.textContent = cfg.actionLabel;
-  primary.disabled = !!cfg.actionDisabled;
-  primary.addEventListener('click', () => {
-    activeDetail = null;
-    cfg.onAction();
-  });
+  // actionLabel が無ければ見るだけの表示にする (探索・拠点のキャラ枠など、実行する操作が無い場合)
+  if (cfg.actionLabel && cfg.onAction) {
+    const onAction = cfg.onAction;
+    const primary = document.createElement('button');
+    primary.type = 'button';
+    primary.textContent = cfg.actionLabel;
+    primary.disabled = !!cfg.actionDisabled;
+    primary.addEventListener('click', () => {
+      activeDetail = null;
+      onAction();
+    });
+    actions.append(primary);
+  }
   const close = document.createElement('button');
   close.type = 'button';
   close.textContent = '閉じる';
@@ -861,7 +891,7 @@ function renderDetailModal(): void {
     activeDetail = null;
     render();
   });
-  actions.append(primary, close);
+  actions.append(close);
   card.append(actions);
 
   detailModalEl.append(card);

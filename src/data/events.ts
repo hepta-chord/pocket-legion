@@ -37,7 +37,7 @@ export interface EventDef {
   altAction?: string;
   /**
    * true なら altAction を持っていても ALT_CHANCE の抽選を経ず、常に二択のまま見せる。
-   * 祠・落石・休息は「選ばせるためのイベント」そのものなので、たまに二択が消えては
+   * 祠・落石・休息・隊商は「選ばせるためのイベント」そのものなので、たまに二択が消えては
    * 存在意義が無くなる (docs/plan.md「分岐を増やす」)
    */
   alwaysAlt?: boolean;
@@ -58,6 +58,9 @@ export const TREASURE_TRAP_CHANCE = 0.3;
 export const NOTHING_TRAP_CHANCE = 0.25;
 /** 死体を漁ったときに、実は罠が仕掛けてあった確率。宝箱・「何も無い」と同じ仕掛け */
 export const CORPSE_TRAP_CHANCE = 0.25;
+/** 宝箱の中身が回復薬だった確率。上限 3 個の保険が毎回満タンだと HP 管理が判断でなくなるので、
+ * 宝箱からはめったに出ないようにする (docs/plan.md「アイテム」) */
+export const TREASURE_POTION_CHANCE = 0.1;
 
 export const EVENTS: readonly EventDef[] = [
   { kind: 'battle', weight: 50, title: '魔物の群れ', body: '通路の先が塞がれている。', action: '戦う' },
@@ -95,7 +98,11 @@ export const EVENTS: readonly EventDef[] = [
     weight: 8,
     title: '行商人',
     body: '荷を積んだ隊商とすれ違った。',
+    // 「選ばせるためのイベント」なので ALT_CHANCE の抽選を経ず常に二択にする。
+    // 買う (金を払う) か、襲う (戦闘。勝てば金と回復薬) かの判断になる
     action: '買う',
+    altAction: '襲う',
+    alwaysAlt: true,
   },
   {
     kind: 'shrine',

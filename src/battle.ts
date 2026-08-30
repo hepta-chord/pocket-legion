@@ -525,6 +525,10 @@ export function useSkill(state: BattleState, slot: number, skillIndex: number, r
     clearBuffStack(state.enemy.cheer);
     clearBuffStack(state.enemy.ward);
     addLog(state, 'good', `${f.name} の${s.def.name}。${state.enemy.def.name} の鼓舞と防御を剥がした。`);
+  } else if (e.kind === 'mana') {
+    // 上限 (MANA_CAP) は超えない。コストは既に引いてあるので、ここで足すぶんが正味の増加になる
+    state.mana = Math.min(MANA_CAP, state.mana + e.amount);
+    addLog(state, 'good', `${f.name} の${s.def.name}。マナが ${state.mana} になった。`);
   } else {
     // stun-self: 将来、味方スキルの代償として使う枠。今回は敵専用の仕組みだが型だけ用意しておく
     f.stunnedUntil = Math.max(f.stunnedUntil, state.turn + 1);

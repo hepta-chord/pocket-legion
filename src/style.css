@@ -681,7 +681,8 @@ button:active:not(:disabled) {
   position: fixed;
   inset: 0;
   z-index: 20;
-  background: rgba(3, 5, 8, 0.92);
+  /* 半透明だと、行が潰れた隙間から背後の画面が透けて見える不具合があったため不透明にする */
+  background: var(--bg);
   display: flex;
   flex-direction: column;
   padding: 10px;
@@ -724,12 +725,20 @@ button:active:not(:disabled) {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
 .picker-row {
+  /*
+   * flex-shrink の既定 (1) のままだと、行数が増えて .picker-list に収まらなくなったとき
+   * flex が全行を無理やり圧縮して潰し、文字が重なって背後が透けて見える不具合になっていた。
+   * overflow-y: auto は「縮めず切り捨ててスクロールする」動きを保証しないので、
+   * ここで縮まないことを明示し、収まらないぶんは .picker-list 側のスクロールに任せる
+   */
+  flex: 0 0 auto;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--panel);

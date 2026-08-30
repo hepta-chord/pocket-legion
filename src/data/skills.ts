@@ -32,7 +32,14 @@ export type SkillEffect =
    * 発動すると自分がその場でスタンする。今回これを持つ味方スキルは無いが、
    * 将来「自分や味方をスタンさせる代償」を持つスキルを作れるよう型だけ用意しておく
    */
-  | { kind: 'stun-self' };
+  | { kind: 'stun-self' }
+  /**
+   * マナを増やす (MANA_CAP で頭打ち)。常時効くパッシブ (旧「泉脈」) だと払い出しの律動
+   * (奇数 2 / 偶数 3) が崩れるので、コストを払って使うアクションにする。
+   * amount はコストを差し引く前の増加量そのもの (例: baseCost 1 で amount 2 なら差し引き +1)。
+   * レアだけが持つ (docs/plan.md「スキルスロット」)
+   */
+  | { kind: 'mana'; amount: number };
 
 export interface ActionSkillDef {
   id: string;

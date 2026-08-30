@@ -37,7 +37,7 @@ import {
   type CharacterEntry,
 } from './data/characters';
 import { generateCommon, NAME_POOLS } from './data/common-gen';
-import { CORPSE_TRAP_CHANCE, NOTHING_TRAP_CHANCE, TREASURE_TRAP_CHANCE } from './data/events';
+import { CORPSE_TRAP_CHANCE, NOTHING_TRAP_CHANCE, TREASURE_POTION_CHANCE, TREASURE_TRAP_CHANCE } from './data/events';
 import { FACTION_HIRE_CAP, FACTION_NAMES, FACTION_WEIGHT, FACTIONS, type Faction } from './data/factions';
 import { makeBoss, makeFoe } from './data/enemies';
 import { DUNGEONS } from './data/dungeons';
@@ -98,8 +98,10 @@ const TAVERN_RARE_CHANCE = 0.15;
 const TAVERN_REROLL_BASE = 60;
 /** 引き直すたびに賃料を上げる倍率。粘るほど高くつく形にする。出撃を終えると初期値に戻す */
 const TAVERN_REROLL_RAISE = 1.5;
-/** 道具屋の回復薬の値段の初期値。酒場の引き直し賃と同じ考え方 (買うたびに上がり、出撃で戻る) */
-const POTION_PRICE_BASE = 80;
+/** 道具屋の回復薬の値段の初期値。酒場の引き直し賃と同じ考え方 (買うたびに上がり、出撃で戻る)。
+ * 上限 3 個の保険が毎回満タンだと HP 管理が判断でなくなるので、簡単には買えない額にする
+ * (docs/plan.md「アイテム」の指示値。これ以上の調整はしない) */
+const POTION_PRICE_BASE = 120;
 /** 回復薬を買うたびに値段を上げる倍率 */
 const POTION_PRICE_RAISE = 1.5;
 
@@ -111,8 +113,12 @@ const SPRING_ALT_EXP_MUL = 3;
 const SHRINE_PRAY_EXP_MUL = 2;
 /** 休息「先を急ぐ」が渡す経験値の倍率。回復を捨てる代わりの見返りなので祠よりわずかに軽くする */
 const REST_PRESS_EXP_MUL = 1.5;
-/** 隊商の回復薬の値段。道具屋の初期値 (POTION_PRICE_BASE) より高くする (行商は割高) */
-const CARAVAN_POTION_PRICE = 150;
+/** 隊商の回復薬の値段。道具屋の初期値 (POTION_PRICE_BASE) より高くする (行商は割高)。
+ * 指示値のため、これ以上の調整はしない */
+const CARAVAN_POTION_PRICE = 220;
+/** 隊商を襲って勝ったときの金の上乗せ (通常の雑魚戦の報酬に加算)。指示値のため調整はしない */
+const CARAVAN_RAID_GOLD_BASE = 100;
+const CARAVAN_RAID_GOLD_PER_DEPTH = 20;
 
 export type Action =
   | { type: 'sortie'; sectorId: number }
@@ -141,8 +147,12 @@ export type Action =
   | { type: 'battle-flee' }
   | { type: 'battle-end-turn' };
 
-/** 進行中の戦闘の種別。決着時の報酬とボス処理の分岐に使う */
-type BattleKind = 'battle' | 'elite' | 'boss';
+/**
+ * 進行中の戦闘の種別。決着時の報酬とボス処理の分岐に使う。
+ * caravan は隊商を「襲う」で入る戦闘。敵は通常の雑魚戦と同じ仕組みで選ぶが、
+ * 勝ったときの報酬 (金の上乗せ + 回復薬 1 個) だけが通常戦と違う (docs/plan.md「アイテム」)
+ */
+type BattleKind = 'battle' | 'elite' | 'boss' | 'caravan';
 
 export interface GameState {
   version: number;
@@ -400,7 +410,7 @@ function commitRng(state: GameState, rng: Rng): void {
 interface Outcome {
   hp: number;
   gold: number;
-  /** 宝イベントでまれに出る回復薬 (0 か 1)。今は使っていないが型は残しておく */
+  /** 宝イベントでまれに出る回復薬 (0 か 1) */
   potion: number;
   kind: LogLineView['kind'];
   text: string;
@@ -412,8 +422,14 @@ function trapOutcome(run: RunState, rng: Rng): Outcome {
   return { hp: -hurt, gold: 0, potion: 0, kind: 'warn', text: `罠だった。${hurt} 受けた。` };
 }
 
-/** 宝箱「開ける」。TREASURE_TRAP_CHANCE の確率で中身が罠に化ける */
+/**
+ * 宝箱「開ける」。TREASURE_POTION_CHANCE の確率で回復薬が出る (めったに出ない指示値)。
+ * それ以外は TREASURE_TRAP_CHANCE の確率で中身が罠に化ける
+ */
 function resolveTreasure(run: RunState, rng: Rng): Outcome {
+  if (rng.chance(TREASURE_POTION_CHANCE)) {
+    return { hp: 0, gold: 0, potion: 1, kind: 'good', text: '箱には回復薬が入っていた。' };
+  }
   if (rng.chance(TREASURE_TRAP_CHANCE)) return trapOutcome(run, rng);
   const gold = Math.round((80 + run.depth * 20) * (0.8 + 0.4 * rng.next()));
   return { hp: 0, gold, potion: 0, kind: 'good', text: `箱には ${gold} G が入っていた。` };
@@ -625,16 +641,26 @@ function settleBattle(state: GameState, run: RunState, rng: Rng): void {
     run.hp = b.hp;
     const scale = 1 + run.depth / 10;
     const kind = state.battleKind;
+    const normalGold = Math.round(rng.int(40, 90) * scale);
+    // 隊商を襲って勝ったときは、通常の雑魚戦の報酬に金を上乗せする (docs/plan.md「アイテム」)
     const gold =
       kind === 'boss'
         ? Math.round(rng.int(400, 700) * scale)
         : kind === 'elite'
           ? Math.round(rng.int(150, 250) * scale)
-          : Math.round(rng.int(40, 90) * scale);
+          : kind === 'caravan'
+            ? normalGold + Math.round((CARAVAN_RAID_GOLD_BASE + run.depth * CARAVAN_RAID_GOLD_PER_DEPTH) * (0.8 + 0.4 * rng.next()))
+            : normalGold;
     run.gold += gold;
     addLog(state, 'good', `${gold} G を得た。`);
-    // 経験値は出撃メンバー全員に入る (ダウン中は入らない)。強敵・ボスほど多い
-    awardExp(state, run, Math.round(EXP_BASE[kind ?? 'battle'] * scale));
+    if (kind === 'caravan') {
+      state.potions = Math.min(POTION_MAX, state.potions + 1);
+      addLog(state, 'good', '隊商から回復薬を 1 個奪った。');
+    }
+    // 経験値は出撃メンバー全員に入る (ダウン中は入らない)。強敵・ボスほど多い。
+    // 隊商襲撃は通常戦と同じ扱いにする (EXP_BASE に 'caravan' 個別の枠は持たない)
+    const expKind = kind === 'caravan' ? 'battle' : (kind ?? 'battle');
+    awardExp(state, run, Math.round(EXP_BASE[expKind] * scale));
     refillFront(run.party);
 
     const wasBoss = kind === 'boss';
@@ -772,6 +798,15 @@ export function step(state: GameState, action: Action): void {
           if (!run.pending.altAction) break;
           run.pending = null;
           addLog(state, 'info', resolveTreasureSkip());
+          break;
+        }
+        case 'caravan': {
+          // 「襲う」。通常の雑魚戦と同じ仕組みで戦闘に入り、勝てば金と回復薬が手に入る
+          // (settleBattle 側の kind === 'caravan' 分岐)。負ければ通常どおり出撃が終わる
+          if (!run.pending.altAction) break;
+          run.pending = null;
+          const foe = makeFoe(run.depth, rng, false);
+          enterBattle(state, run, 'caravan', foe, '隊商を襲った。', rng);
           break;
         }
         case 'spring': {
@@ -993,6 +1028,8 @@ function skillEffectText(def: ActionSkillDef): string {
       return '敵の鼓舞・ガードのスタックを 1 回で全部剥がす';
     case 'stun-self':
       return '代償として自分がその場でスタンする';
+    case 'mana':
+      return `マナを ${e.amount} 増やす (上限あり)`;
   }
 }
 

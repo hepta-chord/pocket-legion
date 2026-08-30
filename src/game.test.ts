@@ -768,6 +768,25 @@ describe('宝箱・「何も無い」に隠れた罠', () => {
     expect(rate).toBeLessThan(0.45);
   });
 
+  it('宝箱から回復薬が出る確率はおよそ 10% (統計テスト)', () => {
+    const state = fresh();
+    step(state, { type: 'sortie', sectorId: 1 });
+    const run = state.run!;
+    const trials = 2000;
+    let potionCount = 0;
+    for (let i = 0; i < trials; i++) {
+      run.hp = run.maxHp; // 罠で全滅させないため、毎回全回復させておく
+      state.potions = 0; // 上限で頭打ちにならないよう、毎回空にしておく
+      run.pending = EVENTS.find((e) => e.kind === 'treasure')!;
+      step(state, { type: 'resolve' });
+      if (state.potions > 0) potionCount += 1;
+    }
+    // 指示値は 10%。統計テストなので幅を持たせる
+    const rate = potionCount / trials;
+    expect(rate).toBeGreaterThan(0.05);
+    expect(rate).toBeLessThan(0.15);
+  });
+
   it('宝箱を「見送る」と金も罠も無い', () => {
     const state = fresh();
     step(state, { type: 'sortie', sectorId: 1 });
@@ -837,6 +856,56 @@ describe('隊商イベント', () => {
     step(state, { type: 'resolve' });
     expect(state.potions).toBe(3);
     expect(state.gold).toBe(goldBefore);
+  });
+
+  it('常に二択 (alwaysAlt) で、「買う」「襲う」が揃っている', () => {
+    const caravan = EVENTS.find((e) => e.kind === 'caravan')!;
+    expect(caravan.alwaysAlt).toBe(true);
+    expect(caravan.action).toBe('買う');
+    expect(caravan.altAction).toBe('襲う');
+  });
+
+  it('「襲う」を選ぶと通常の雑魚戦と同じ仕組みで戦闘に入る', () => {
+    const state = fresh();
+    step(state, { type: 'sortie', sectorId: 1 });
+    const run = state.run!;
+    run.pending = EVENTS.find((e) => e.kind === 'caravan')!;
+    step(state, { type: 'resolve-alt' });
+    expect(state.battle).not.toBeNull();
+    expect(state.battleKind).toBe('caravan');
+    expect(run.pending).toBeNull();
+  });
+
+  it('襲って勝つと、通常戦の報酬に加えて回復薬が 1 個増える', () => {
+    const state = fresh();
+    step(state, { type: 'sortie', sectorId: 1 });
+    const run = state.run!;
+    state.potions = 0;
+    run.pending = EVENTS.find((e) => e.kind === 'caravan')!;
+    step(state, { type: 'resolve-alt' });
+    const goldBefore = run.gold;
+
+    state.battle!.enemy.hp = 0;
+    step(state, { type: 'battle-skill', slot: 0, skill: 0 });
+
+    expect(state.battle).toBeNull();
+    expect(state.potions).toBe(1);
+    expect(run.gold).toBeGreaterThan(goldBefore);
+  });
+
+  it('襲って負けると、通常の戦闘敗北と同じく出撃が終わり回復薬は増えない', () => {
+    const state = fresh();
+    step(state, { type: 'sortie', sectorId: 1 });
+    const run = state.run!;
+    state.potions = 0;
+    run.pending = EVENTS.find((e) => e.kind === 'caravan')!;
+    step(state, { type: 'resolve-alt' });
+
+    state.battle!.hp = 0;
+    step(state, { type: 'battle-end-turn' });
+
+    expect(state.result?.won).toBe(false);
+    expect(state.potions).toBe(0);
   });
 });
 
