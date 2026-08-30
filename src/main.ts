@@ -228,7 +228,9 @@ function renderStatus(vm: ViewModel): void {
     hpRow.className = 'hp-row';
     hpRow.append(hpGroup('HP', s.hp, s.maxHp, 'full'));
     status.append(hpRow);
-    status.append(statusSpan(`${s.sectorName} 深度 ${s.depth}/${s.goal}`));
+    // 奈落 (goal が null) は終わりが無いので目標深度を出す意味が無く、深度だけ見せる
+    // (docs/plan.md「奈落」)
+    status.append(statusSpan(s.goal === null ? `${s.sectorName} ${s.depth} 階` : `${s.sectorName} 深度 ${s.depth}/${s.goal}`));
   } else if (s.kind === 'town') {
     // seed はプレイヤーが使う情報ではない (乱数の再現に使う内部値) ので表示しない
     status.append(statusSpan(`所持金 ${s.gold} G`), statusSpan(`回復薬 ${s.potions}`));
@@ -366,10 +368,20 @@ function renderExploreStage(s: TownView): void {
     card.disabled = !sec.unlocked;
     const name = document.createElement('p');
     name.className = 'card-name';
-    name.textContent = sec.unlocked ? sec.name : `${sec.name} (未開放)`;
+    // 奈落 (endless) は「B40」ではなく最深記録を出す。まだ潜っていなければ「未到達」
+    // (docs/plan.md「奈落」)
+    const label =
+      sec.endless && sec.unlocked
+        ? (sec.deepest ?? 0) < sec.from
+          ? `${sec.name} (未到達)`
+          : `${sec.name} (最深 ${sec.deepest} 階)`
+        : sec.unlocked
+          ? sec.name
+          : `${sec.name} (未開放)`;
+    name.textContent = label;
     const sub = document.createElement('p');
     sub.className = 'card-sub';
-    sub.textContent = `深度 ${sec.depth} まで`;
+    sub.textContent = sec.endless ? '終わりの無い区画' : `深度 ${sec.depth} まで`;
     card.append(name, sub);
     if (sec.unlocked) card.addEventListener('click', () => act({ type: 'sortie', sectorId: sec.id }));
     list.append(card);
@@ -558,6 +570,17 @@ function renderStageBody(vm: ViewModel): void {
   }
 
   if (s.kind === 'dungeon') {
+    // 奈落のボスを倒した直後。「潜り続ける」「帰還する」の二択をイベントと同じ見た目で出す
+    // (docs/plan.md「奈落」)。event を経ないので、この分岐は event の有無より先に見る
+    if (s.abyssChoice) {
+      stageBody.append(
+        eventBox('守護者は沈んだ。', '奈落はまだ続いている。', [
+          actionButton('潜り続ける', { type: 'abyss-continue' }, advancing),
+          actionButton('帰還する', { type: 'abyss-return' }, advancing),
+        ]),
+      );
+      return;
+    }
     if (!s.event) return;
     // 二択 (alt を持つ occurrence) はここで両方のボタンを見せる。単一行動のイベントは
     // 今までどおり操作列 (renderDungeonCluster) のボタン 1 つで解決する
@@ -1199,10 +1222,13 @@ function renderDungeonCluster(s: DungeonView): void {
 
   // 戦闘画面と同じ考え方で、キャラ枠の行の高さに操作を揃える。
   // 上行 = 常用の「進む」(単一行動のイベント解決中はその 1 つ)、下行 = 引き返す・回復薬・編成。
-  // 二択 (alt あり) はステージ側のウィンドウに出すので、ここには置かない (操作列に混ぜない)
+  // 二択 (alt あり・奈落の abyssChoice) はステージ側のウィンドウに出すので、ここには置かない
+  // (操作列に混ぜない)
   const primary = document.createElement('div');
   primary.className = 'controls-primary';
-  if (s.event) {
+  if (s.abyssChoice) {
+    // 二択はステージ側 (renderStageBody) に出ているので、ここは空のままにする
+  } else if (s.event) {
     if (!s.event.alt) primary.append(actionButton(s.event.action, { type: 'resolve' }, advancing));
   } else {
     primary.append(navButton('進む', () => startAdvanceAnimation(toViewModel(state)), advancing));

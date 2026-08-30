@@ -93,7 +93,18 @@ export interface TownView {
   gold: number;
   potions: number;
   /** 出撃できる区画。解放済みのものだけが並ぶ */
-  sectors: { id: number; name: string; depth: number; unlocked: boolean }[];
+  sectors: {
+    id: number;
+    name: string;
+    /** 開始深度。endless の区画で「まだ潜っていない (未到達)」を deepest と比べて判定するのに使う */
+    from: number;
+    depth: number;
+    /** 終わりの無い区画か。true なら「B40」ではなく最深記録を出す */
+    endless?: boolean;
+    /** 最深到達深度 (endless の区画だけ意味を持つ) */
+    deepest?: number;
+    unlocked: boolean;
+  }[];
   /** 酒場の品揃え (コモン 3 人まで)。affordable は所持金で雇えるか */
   tavern: (FormationCharacterView & { price: number; affordable: boolean })[];
   /** 品揃えの引き直しに要る今の賃料。引き直すたびに上がり、出撃を終えると初期値に戻る */
@@ -150,13 +161,19 @@ export interface DungeonView {
   kind: 'dungeon';
   sectorName: string;
   depth: number;
-  goal: number;
+  /** 目標深度。奈落 (endless) では終わりが無いので null (「40 / 40」ではなく「42 階」だけ出す) */
+  goal: number | null;
   hp: number;
   maxHp: number;
   /** 通路の奥行き。3D ビューの描き分けに使う */
   corridor: number;
   /** 未解決のイベント。null なら「進む」だけができる */
   event: DungeonEventView | null;
+  /**
+   * 奈落のボスを倒した直後で、「潜り続ける」か「帰還する」かを選ぶ場面か。
+   * true のときは操作クラスタの「進む」の代わりにこの二択を出す (docs/plan.md「奈落」)
+   */
+  abyssChoice: boolean;
   /** キャラスロット (3×2) にそのまま出す、今の前衛 6 枠。タップしても何も起きない表示専用の並び */
   front: FormationSlotView[];
   frontCount: number;
