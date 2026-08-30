@@ -9,6 +9,7 @@
   --good: #7ee787;
   --bad: #ff7b72;
   --warn: #e3b341;
+  --mana: #58a6ff;
 }
 
 * {
@@ -92,11 +93,13 @@ button:active:not(:disabled) {
   gap: 10px;
 }
 
-/* マナ・ターン・防御アイコン・離脱までの残りターンをまとめる行 */
+/* マナとターン数だけの行。中央寄せにして視線を 1 か所に集める。
+   防御・鼓舞・ガード・バリア・離脱までの残りターンは味方の状態アイコン列 (#icons-ally) 側 */
 .status-meta {
   flex: 1 1 100%;
   display: flex;
   flex-wrap: wrap;
+  justify-content: center;
   align-items: center;
   gap: 3px 10px;
 }
@@ -142,11 +145,14 @@ button:active:not(:disabled) {
   background: var(--bad);
 }
 
-/* マナの丸表示・防御のアイコン表示。塗り (現在値・積んだ枚数) と空 (上限まで) を
-   並べるだけの文字列なので装飾は最小限にする */
-.mana-dots,
-.defense-icons {
+/* マナの丸表示。塗り (現在値) と空 (上限まで) を並べるだけなので装飾は最小限にする。
+   塗られた側 (●) だけ .mana-filled で青に塗り、残量が一目で読めるようにする */
+.mana-dots {
   letter-spacing: 1px;
+}
+
+.mana-filled {
+  color: var(--mana);
 }
 
 /* ステージ。flex: 1 で残り全部を取り、縦が足りなければここが潰れる。
@@ -563,20 +569,29 @@ button:active:not(:disabled) {
   font-size: 12px;
 }
 
+/* 一覧 (拠点ホーム・探索・酒場で共有)。項目を 1 つの枠にまとめ、項目の間には
+   罫線を挟む。個々を独立した箱にすると項目数が増えるほど間延びして見えるうえ、
+   切れ目が罫線 1 本より弱くなるため、外枠 1 つ + 内部の区切り線という形に統一する */
 .list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
 }
 
 .card {
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  border: none;
+  border-radius: 0;
   padding: 6px 8px;
   display: flex;
   flex-direction: column;
   gap: 3px;
   background: var(--panel-raised);
+}
+
+.list .card:not(:last-child) {
+  border-bottom: 1px solid var(--line);
 }
 
 /* 酒場のカードなど、タップで詳細モーダルを開く card。button 要素だが見た目は .card のまま */

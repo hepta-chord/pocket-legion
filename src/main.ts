@@ -42,7 +42,10 @@ if (loaded.discarded) addLog(state, 'info', '前のセーブは形式が古い�
 // 理由: セーブしたい「進行」ではなく「今どの画面を見ているか」でしかなく、
 // リロードすれば拠点トップやダンジョンの通常画面に戻ってもプレイヤーは困らないため。
 // (docs/plan.md 4 節の「main.ts のローカル状態にしてもよい」を選んだ)
-type TownPage = 'home' | 'tavern' | 'formation';
+// 拠点は 2 階層のドリルダウンにする。ホームは「酒場」「探索」の 2 択だけを出し、
+// 探索を選ぶと区画の一覧 (explore) に進む。将来、迷宮以外の行き先や
+// 複数の迷宮が増えても、この階層を作り直さずに済む
+type TownPage = 'home' | 'explore' | 'tavern' | 'formation';
 let page: TownPage = 'home';
 let dungeonFormationOpen = false;
 
@@ -155,6 +158,22 @@ function defenseIcons(defense: number, max: number): string {
   return '◆'.repeat(filled) + '◇'.repeat(Math.max(0, max - filled));
 }
 
+/**
+ * マナの丸表示。塗られた側 (●) だけ青 (.mana-filled) にして残量を一目で読めるようにする。
+ * 空側 (○) は dotsOf と同じ淡色のままにしたいので、1 つの文字列にはせず塗り/空を別 span に分ける
+ */
+function manaGroup(mana: number, manaCap: number): HTMLElement {
+  const filled = Math.max(0, Math.min(manaCap, mana));
+  const wrap = document.createElement('span');
+  wrap.className = 'mana-dots';
+  wrap.append('マナ ');
+  const on = document.createElement('span');
+  on.className = 'mana-filled';
+  on.textContent = '●'.repeat(filled);
+  wrap.append(on, '○'.repeat(Math.max(0, manaCap - filled)));
+  return wrap;
+}
+
 function renderStatus(vm: ViewModel): void {
   status.innerHTML = '';
   const s = vm.screen;
@@ -170,18 +189,13 @@ function renderStatus(vm: ViewModel): void {
     }
     status.append(hpRow);
 
+    // マナとターン数だけの行。中央寄せにして視線を 1 か所に集める。
+    // 防御・鼓舞・ガード・バリア・離脱は「今この戦闘でどうなっているか」を表す同じ種類の
+    // 情報なので、ここではなく味方の状態アイコン列 (iconsAlly) 側にまとめて出す
+    // (置き場所を分けると探す場所が増えるため。逃走の残りターンも同じ理由でそちら側)
     const meta = document.createElement('div');
     meta.className = 'status-meta';
-    const mana = document.createElement('span');
-    mana.className = 'mana-dots';
-    mana.textContent = `マナ ${dotsOf(s.mana, s.manaCap)}`;
-    meta.append(mana, statusSpan(`ターン ${s.turn}`));
-    const defense = document.createElement('span');
-    defense.className = 'defense-icons';
-    defense.textContent = `防御 ${defenseIcons(s.defense, s.defenseMax)}`;
-    meta.append(defense);
-    // 逃走までの残りターンは味方の状態アイコン (iconsAlly) 側に出す。
-    // ステータス欄の文字だと戦闘中に見落とし、あと何ターンで抜けられるか分からなくなるため
+    meta.append(manaGroup(s.mana, s.manaCap), statusSpan(`ターン ${s.turn}`));
     status.append(meta);
   } else if (s.kind === 'dungeon') {
     // 探索中は敵がいないので、味方の HP バーだけを幅いっぱいに出す
@@ -200,14 +214,62 @@ function renderStatus(vm: ViewModel): void {
 // ---------------------------------------------------------------------------
 // ステージ本体 (拠点・ダンジョンのイベント・結果)。戦闘は #portrait 側が受け持つ
 
-// 拠点のトップ (行き先の一覧)。迷宮 (浅層・中層・深層) と酒場を同じ一覧に並べ、
-// 探索でイベントを解決するのと同じ位置・同じ操作感にする (ドリルダウンはやめる)。
+// 拠点のトップ (行き先の一覧)。「酒場」「探索」の 2 択だけを出す。
+// 行ける場所 (迷宮以外の施設や、複数の迷宮) が将来増えることを見越して、
+// 区画選びは 1 段掘り下げた先 (renderExploreStage) に置く。
 // 一覧が主役なので、拠点では情景アート (#portrait) を出さずステージを一覧いっぱいに使う
 // (renderPortrait 側。カードの隙間や見出しにアートが透けて読みにくくなるのを避けるため)
 function renderHomeStage(s: TownView): void {
   const head = document.createElement('p');
   head.className = 'lead';
   head.textContent = 'どこへ行く?';
+  stageBody.append(head);
+
+  const list = document.createElement('div');
+  list.className = 'list';
+
+  const tavernCard = document.createElement('button');
+  tavernCard.type = 'button';
+  tavernCard.className = 'card card-tappable';
+  const tavernName = document.createElement('p');
+  tavernName.className = 'card-name';
+  tavernName.textContent = '酒場';
+  const tavernSub = document.createElement('p');
+  tavernSub.className = 'card-sub';
+  tavernSub.textContent = `雇える顔ぶれ ${s.tavern.length} 人`;
+  tavernCard.append(tavernName, tavernSub);
+  tavernCard.addEventListener('click', () => {
+    page = 'tavern';
+    render();
+  });
+  list.append(tavernCard);
+
+  const exploreCard = document.createElement('button');
+  exploreCard.type = 'button';
+  exploreCard.className = 'card card-tappable';
+  const exploreName = document.createElement('p');
+  exploreName.className = 'card-name';
+  exploreName.textContent = '探索';
+  const exploreSub = document.createElement('p');
+  exploreSub.className = 'card-sub';
+  const unlockedCount = s.sectors.filter((sec) => sec.unlocked).length;
+  exploreSub.textContent = `開放済み ${unlockedCount}/${s.sectors.length} 区画`;
+  exploreCard.append(exploreName, exploreSub);
+  exploreCard.addEventListener('click', () => {
+    page = 'explore';
+    render();
+  });
+  list.append(exploreCard);
+
+  stageBody.append(list);
+}
+
+/** 探索の行き先一覧 (ホームから「探索」を選んだ先)。今は迷宮 1 本ぶんの区画一覧だが、
+ * 迷宮が増えたときもこの階層の中で一覧を足すだけで済む */
+function renderExploreStage(s: TownView): void {
+  const head = document.createElement('p');
+  head.className = 'lead';
+  head.textContent = 'どこへ潜る?';
   stageBody.append(head);
 
   const list = document.createElement('div');
@@ -228,22 +290,6 @@ function renderHomeStage(s: TownView): void {
     if (sec.unlocked) card.addEventListener('click', () => act({ type: 'sortie', sectorId: sec.id }));
     list.append(card);
   }
-
-  const tavernCard = document.createElement('button');
-  tavernCard.type = 'button';
-  tavernCard.className = 'card card-tappable';
-  const tavernName = document.createElement('p');
-  tavernName.className = 'card-name';
-  tavernName.textContent = '酒場';
-  const tavernSub = document.createElement('p');
-  tavernSub.className = 'card-sub';
-  tavernSub.textContent = `雇える顔ぶれ ${s.tavern.length} 人`;
-  tavernCard.append(tavernName, tavernSub);
-  tavernCard.addEventListener('click', () => {
-    page = 'tavern';
-    render();
-  });
-  list.append(tavernCard);
 
   stageBody.append(list);
 }
@@ -324,6 +370,7 @@ function renderStageBody(vm: ViewModel): void {
 
   if (s.kind === 'town') {
     if (page === 'home') renderHomeStage(s);
+    else if (page === 'explore') renderExploreStage(s);
     else if (page === 'tavern') renderTavernStage(s);
     else renderFormationStage(s);
     return;
@@ -419,10 +466,12 @@ function renderIcons(vm: ViewModel): void {
   if (vm.screen.kind !== 'battle') return;
   const s = vm.screen;
 
-  // ステージ左: 味方の状態を縦列で。防御の枚数はステータス欄のアイコンが主なので、
-  // ここでは出さない (二重表示にしない)。0 や無しのときは出さない。
+  // ステージ左: 味方の状態を縦列で。防御・鼓舞・ガード・バリア・離脱はどれも
+  // 「今この戦闘でどうなっているか」を表す同じ種類の情報なので、ここに 1 列でまとめる
+  // (ステータス欄と探す場所を分けない)。0 や無しのときは出さない。
   // 鼓舞・ガードは枚数のドットに残りターンを添える。逃走の残りターンも
   // ステータス欄の文字だと見落とすため、ここに常時見える状態アイコンとして出す
+  if (s.defense > 0) iconsAlly.append(badge(`防御 ${defenseIcons(s.defense, s.defenseMax)}`));
   if (s.barrier) iconsAlly.append(badge('バリア'));
   if (s.cheerStacks > 0) iconsAlly.append(badge(`鼓舞 ${dotsOf(s.cheerStacks, s.cheerMax)} ${s.cheerTurns}`, 'warn'));
   if (s.wardStacks > 0) iconsAlly.append(badge(`ガード ${dotsOf(s.wardStacks, s.wardMax)} ${s.wardTurns}`, 'warn'));
@@ -800,7 +849,7 @@ function renderBattleCluster(s: BattleView): void {
   // 上行 (キャラ枠 1 行目と同じ高さ) に常用群 (ターン終了・防御) を 2 分割、
   // 下行 (2 行目と同じ高さ) に臨時群 (回復薬・編成・逃げる) を 3 分割で置く。
   // 比率を行と無関係に取ると、キャラ枠の罫線と操作列の境目がずれて雑然と見える。
-  // 防御の枚数・逃走の残りターンはステータス欄に出すので、ボタン側に数字は乗せない
+  // 防御の枚数・逃走の残りターンは味方の状態アイコン列に出すので、ボタン側に数字は乗せない
   const primary = document.createElement('div');
   primary.className = 'controls-primary';
   primary.append(actionButton('ターン終了', { type: 'battle-end-turn' }));
@@ -933,7 +982,9 @@ function renderTownCluster(s: TownView): void {
     return;
   }
 
-  // 酒場 (タップして開く詳細はモーダル側で処理する。ここは戻るだけ)
+  // 酒場・探索 (どちらもホームから 1 段掘り下げた先の一覧。酒場はタップして開く詳細を
+  // モーダル側で処理し、探索は一覧の各区画がそのまま出撃ボタンになるので、
+  // ここではどちらも「戻る」だけを置けばよい)
   controlsEl.append(navButton('戻る', () => {
     page = 'home';
     render();
