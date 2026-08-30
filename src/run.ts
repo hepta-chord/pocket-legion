@@ -3,10 +3,11 @@
 // マップを持たないので、状態は「今どの区画のどの深度にいるか」と
 // 「未解決のイベントがあるか」だけで足りる。座標も向きも持たない。
 
-import { newParty, partyMaxHp, type Fighter, type Party } from './battle';
-import { buildFighter, CHARACTERS, type CharacterEntry } from './data/characters';
+import { partyMaxHp, type Fighter, type Party } from './battle';
+import { buildFighter, type CharacterEntry } from './data/characters';
 import { BOSS_ALT_EVENT, pickEvent, TOTAL_WEIGHT, type EventDef } from './data/events';
 import { sectorById, type Sector } from './data/sectors';
+import { partyFromRosterAndFormation, type Formation } from './formation';
 import type { Rng } from './rng';
 
 export interface RunState {
@@ -31,20 +32,10 @@ export interface RunState {
   downed: Fighter[];
 }
 
-/**
- * 出撃メンバーを roster (所持キャラの id 列) 全員で組む。前衛 6 まで、あふれたら控えになる。
- * roster が 2 人しかいなければ 2 人で潜ることになる (docs/plan.md の編成フロー)
- */
-function buildParty(roster: readonly string[]): Party {
-  const fighters = roster
-    .map((id) => CHARACTERS.find((c) => c.id === id))
-    .filter((c): c is CharacterEntry => c !== undefined)
-    .map(buildFighter);
-  return newParty(fighters.slice(0, 6), fighters.slice(6));
-}
-
-export function startRun(sectorId: number, roster: readonly string[]): RunState {
-  const party = buildParty(roster);
+export function startRun(sectorId: number, roster: readonly string[], formation: Formation): RunState {
+  // 編成 (formation) は前衛 6 枠だけを決める。デッキは絞らないので、
+  // 前衛に選ばれなかった roster 全員が控えになる (docs/plan.md「編成画面」)
+  const party = partyFromRosterAndFormation(roster, formation);
   const maxHp = partyMaxHp(party);
   return {
     sectorId,
@@ -98,6 +89,7 @@ export function isWiped(run: RunState): boolean {
 
 /**
  * 新しいキャラをその場でデッキ (出撃メンバー) に入れる。前衛に空きがあれば前衛、無ければ控え。
+ * デッキは絞らないので控えの人数に上限は無く、常にデッキへ入る。
  * 新しい体力ぶん maxHp も伸ばす (元から居た扱いの復帰 (reviveDowned) とは違い、
  * こちらは編成そのものが増えるため)
  */

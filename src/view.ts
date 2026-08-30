@@ -7,13 +7,73 @@ export interface LogLineView {
   text: string;
 }
 
-/** 酒場・所持一覧で共有する、キャラ 1 人ぶんの表示情報 */
-interface CharacterCardView {
+/** アクションスキル 1 つぶんの詳細。編成画面の「タップして開く詳細」用 */
+export interface SkillDetailView {
+  name: string;
+  cost: number;
+  /** '物理' | '魔法' | '必殺' */
+  category: string;
+  /** 効果の短文。game.ts 側で文字列化したものをそのまま出す */
+  effect: string;
+  /** '1回限定' '代償' など。無ければ null */
+  note: string | null;
+}
+
+/** パッシブスキル 1 つぶんの詳細 */
+export interface PassiveDetailView {
+  name: string;
+  effect: string;
+}
+
+/** 酒場・所持一覧・編成で共有する、キャラ 1 人ぶんの表示情報 */
+export interface CharacterCardView {
   id: string;
   name: string;
   faction: string;
-  /** アクションスキルとパッシブの名前を並べたもの */
+  /** アクションスキルとパッシブの名前を並べたもの。一覧行の要約に使う */
   skills: string[];
+}
+
+/**
+ * 編成カードで共有する形。レアリティ・攻撃力・体力 (パーティ最大 HP への寄与) を常に持たせ、
+ * 一覧行 (名前・陣営・レアリティ・攻撃力・体力) とタップして開く詳細 (スキル・パッシブ) の
+ * 両方を賄う。詳細の効果文はここで文字列として届く (main.ts では組み立てない)
+ */
+export type FormationCharacterView = CharacterCardView & {
+  rarity: 'common' | 'rare';
+  attack: number;
+  vitality: number;
+  skillDetails: SkillDetailView[];
+  passiveDetails: PassiveDetailView[];
+};
+
+/** 編成の 1 スロットに置かれているキャラ。null は空き */
+export interface FormationSlotView {
+  character: FormationCharacterView | null;
+}
+
+/**
+ * 拠点の編成ページ。前衛 6 人を選ぶだけの画面で、控えは絞らない
+ * (前衛に選ばれなかった roster 全員が自動で控えになる)。
+ * 戦闘画面のキャラスロットと同じ 3 列 × 2 行にするため、slots は長さ 6 で固定にする
+ */
+export interface FormationEditorView {
+  slots: FormationSlotView[];
+  /** 編成を一度も触っておらず、roster の先頭から自動で詰めた表示になっているか */
+  auto: boolean;
+  /** 配置候補 (所持キャラ全員)。placedSlot は今どの前衛スロットにいるか (控えなら null) */
+  roster: (FormationCharacterView & { placedSlot: number | null })[];
+}
+
+/**
+ * ダンジョン内 (戦闘外) の編成。今のデッキ (前衛 + 控え) のうち、前衛 6 枠の中身だけを
+ * 並べ替える。新しいキャラは増やせず、ダウン中のキャラは Party から退避済みなので
+ * そもそも候補に出てこない
+ */
+export interface DungeonFormationView {
+  slots: FormationSlotView[];
+  /** 候補 (今のデッキ全員)。placedSlot は前衛のどこにいるか (控えなら null) */
+  roster: (FormationCharacterView & { placedSlot: number | null })[];
 }
 
 /** 拠点の画面 */
@@ -24,9 +84,10 @@ export interface TownView {
   /** 出撃できる区画。解放済みのものだけが並ぶ */
   sectors: { id: number; name: string; depth: number; unlocked: boolean }[];
   /** 酒場の品揃え (コモン 3 人まで)。affordable は所持金で雇えるか */
-  tavern: (CharacterCardView & { price: number; affordable: boolean })[];
-  /** 所持キャラの一覧。編成の入れ替え UI はまだ無い */
-  roster: (CharacterCardView & { rarity: 'common' | 'rare' })[];
+  tavern: (FormationCharacterView & { price: number; affordable: boolean })[];
+  /** 所持キャラの一覧 */
+  roster: FormationCharacterView[];
+  formation: FormationEditorView;
 }
 
 /** ダンジョン画面のイベント。alt があれば二択になる (ボス前の分岐イベント) */
@@ -49,10 +110,14 @@ export interface DungeonView {
   corridor: number;
   /** 未解決のイベント。null なら「進む」だけができる */
   event: DungeonEventView | null;
+  /** キャラスロット (3×2) にそのまま出す、今の前衛 6 枠。タップしても何も起きない表示専用の並び */
+  front: FormationSlotView[];
   frontCount: number;
   reserveCount: number;
   downedCount: number;
   potions: number;
+  /** ダンジョン内 (戦闘外) の編成ページ用。今のデッキの並べ替えだけができる */
+  formation: DungeonFormationView;
 }
 
 /**
@@ -73,6 +138,8 @@ export interface BattleView {
   turn: number;
   /** 同一ターン内で命中した攻撃の回数。0 は目立たせない表示にする */
   combo: number;
+  /** 支援 (buff) スキルによる攻撃倍率への加算。0 なら支援中でない */
+  buff: number;
   potions: number;
   /** 敵は常に 1 体。対象選択を無くすための仕様なので単数で持つ */
   enemy: {
@@ -86,6 +153,7 @@ export interface BattleView {
     /** 大技まであと何ターンか */
     countdown: number;
     alive: boolean;
+    isBoss: boolean;
   };
   /** 前衛 6 枠。null は空きスロット */
   slots: ({
@@ -103,7 +171,8 @@ export interface BattleView {
       note: string | null;
     }[];
   } | null)[];
-  reserve: { id: string; name: string; faction: string }[];
+  /** 交代ピッカーの候補。編成画面と同じ要約情報を出す (名前・陣営・レアリティ・攻撃力・体力) */
+  reserve: FormationCharacterView[];
   swapCooldown: number;
   canGuard: boolean;
 }
