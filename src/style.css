@@ -657,6 +657,25 @@ button:active:not(:disabled) {
   font-size: 11px;
 }
 
+/* ホーム一覧の最下部「ゲームをはじめから」。行き先の一覧 (.card) と見た目を分け、
+   赤文字で「別物 (取り返しが付かない操作)」だと分からせる (docs/plan.md「拠点画面」) */
+.danger-link {
+  align-self: flex-start;
+  margin-top: 10px;
+  border: none;
+  background: none;
+  padding: 6px 2px;
+  color: var(--bad);
+  font: inherit;
+  text-decoration: underline;
+}
+
+/* 確認ダイアログの「はい」。取り返しの付かない操作だけ赤にする */
+.btn-danger {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
 .row {
   display: flex;
   gap: 6px;

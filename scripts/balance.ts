@@ -1,6 +1,6 @@
 // バランス計測の入口。npm run balance で回す。
 
-import { measure } from '../src/sim/autoplay';
+import { measure, measureAbyss } from '../src/sim/autoplay';
 import { formatReports } from '../src/sim/report';
 
 // 想定レベル (浅層 1・中層 10・深層 20) と想定所持人数 (浅層 5・中層 12・深層 20) を
@@ -15,6 +15,23 @@ const rows = [
 ];
 
 console.log(formatReports(rows));
+
+// 奈落 (docs/plan.md「奈落」): 全滅するまで潜り続けて到達深度だけを測る。
+// 生還率・ボス勝率は測らない (全滅するまで潜り続けるのが前提のため)。
+// 部隊の育ち具合を 3 段階に振るのは、奈落が「育てるほど 1 つ先の関門が開く」形に
+// なっているかを見るため。1 段階だけでは壁が動いているのか止まっているのか読めない
+console.log('');
+console.log('奈落 (各 200 回、全滅するまで潜り続ける):');
+for (const [level, owned] of [
+  [30, 20],
+  [40, 28],
+  [45, 32],
+] as const) {
+  const r = measureAbyss(200, 44, level, owned);
+  const reach = r.reach.map((x) => `${x.depth}階 ${Math.round(x.rate * 100)}%`).join(' / ');
+  console.log(`  想定 Lv${level}・所持 ${owned}: 平均 ${r.avgDepth.toFixed(1)} 階 / 最深 ${r.maxDepth} 階 | ${reach}`);
+}
+
 console.log(
   [
     '',

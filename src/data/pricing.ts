@@ -18,24 +18,30 @@ const SKILL_PRICE: Record<string, number> = {
   sweep: 16,
   storm: 30,
   'holy-bolt': 28,
+  flash: 40,
   pray: 24,
   cheer: 20,
   ward1: 20,
   barrier: 26,
-  // 初期の 2 人
+  'gen-combo': 22,
+  'dispel-one': 14,
+  'dispel-crush': 26,
+  // 初期の 3 人 (ネームド)
   'mate-bolt': 22,
   'mate-heal': 22,
   'hero-slash': 60,
   'hero-finish': 70,
-  // レア専用 (0 コスト通常攻撃と、その上位版)
-  'r1-slash': 60,
-  'r2-slash': 60,
-  'r3-slash': 60,
-  'r4-slash': 60,
+  purge: 34,
+  // レア専用 (0 コスト通常攻撃の多段バリエーションと、その上位版)
+  'rare-slash': 60,
+  'twin-strike': 65,
+  'triple-strike': 70,
   cheer2: 40,
   ward2: 40,
   'last-stand': 65,
   'great-blade': 75,
+  rampage: 80,
+  aurora: 85,
 };
 
 /** 未知の id (将来スキルを増やしたときの保険) は平均的な値を仮に置く */

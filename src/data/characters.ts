@@ -5,26 +5,23 @@
 // 2 コスト強攻撃のどちらかで戦う。前衛の大半は物理スキルの手数で戦い、
 // 魔法と必殺は一撃が明確に強い代わりに使うたび出撃を通してコストが上がる
 // 「切りどころを選ぶ札」になる。
-// (例外: カクサンとスケサンはレア扱いだが、0 コスト通常攻撃を持たない。
-// カクサンはバフ剥がしとガードだけの純粋な支援・壁役、スケサンは 1 コストの攻撃魔法と
-// ヒーリングを持つ希少な魔法使い。0 コスト攻撃の有無ではなく「初期から所持し、所持から
-// 外れない」ことがレア扱いの理由なので、この 2 人の例外は成立する)
 //
-// コモンはここに名簿を持たない (data/common-gen.ts でその場ごとに生成する)。
-// ここに残るのは固定で定義するキャラ: 初期の 3 人 (主人公コーモン・相棒スケサンとカクサン) と、
-// レア 4 人 (0 コスト通常攻撃を持つ熟練者。スキル構成もパラメータも固定)。
+// コモンとレアはどちらもここに名簿を持たない (data/common-gen.ts でその場ごとに生成する)。
+// ここに残るのは固定の 3 人 (主人公コーモン・相棒スケサンとカクサン) だけで、
+// rarity は 'named' という別格の扱いにする (docs/plan.md「初期の 2 人」)。
+// ネームドは酒場に出ず、雇用上限にも数えず、転生もできない。
 //
 // レベル・成長カーブ (growth.ts) は個体ごとに持つ。CHARACTERS の要素はあくまで
 // 「定義」の共有オブジェクトなので、所持に積むときは instantiate() で必ずコピーを作り、
 // レベルアップが他のセーブ・他のプレイへ漏れないようにする。
-// 陣営倍率 (同陣営の所持で全員が底上げされる仕組み) はまだ後回し (マイルストーン 5 の残り)。
 
 import { makeSkillState, type Fighter } from '../battle';
 import type { Faction } from '../data/factions';
 import type { ActionSkillDef, PassiveDef } from '../data/skills';
 import { effectiveStat, type Curve } from '../growth';
 
-/** レアの 0 コスト通常攻撃。タダでコンボを起点にできるのがレアの価値になる */
+/** レアの 0 コスト通常攻撃。タダでコンボを起点にできるのがレアの価値になる。主人公だけがここで使う
+ * (コモン・レアの生成分は common-gen.ts の rareSlash が同じ形を持つ) */
 const zeroAttack = (id: string, name = '斬撃', shortName = '斬撃'): ActionSkillDef => ({
   id,
   name,
@@ -35,58 +32,17 @@ const zeroAttack = (id: string, name = '斬撃', shortName = '斬撃'): ActionSk
 });
 
 /**
- * マナを増やすアクションスキル。常時 +1 するパッシブ「泉脈」は払い出しの律動
- * (奇数 2 / 偶数 3) を崩すので廃止し、代わりに 1 マナ払って 2 マナ得る (差し引き +1) の
- * アクションにする。使うターンを選ばせるのが狙いなので、物理と同じ「ターン内 +1 で頭打ち」
- * の消耗にして、出撃を通した消耗はさせない (docs/plan.md「スキルスロット」)。レアだけが持つ
+ * 主人公の必殺。他の必殺より高倍率の単発にして、必殺の最上位に置く
+ * (docs/plan.md「スキル配分の指針」)。必殺は物理属性に落ちる (elementOf) ので、
+ * 魔法耐性の敵にも半減されない
  */
-const manaGift: ActionSkillDef = {
-  id: 'mana-gift',
-  name: '魔力譲渡',
-  shortName: '魔力譲渡',
-  category: 'physical',
-  baseCost: 1,
-  effect: { kind: 'mana', amount: 2 },
-};
-
-/** ward を一度に 2 枚積む。レアの壁役が持つ上位版 */
-const ward2: ActionSkillDef = {
-  id: 'ward2',
-  name: '鉄壁',
-  shortName: '鉄壁',
-  category: 'physical',
-  baseCost: 2,
-  effect: { kind: 'ward', stacks: 2 },
-};
-
-const lastStand: ActionSkillDef = {
-  id: 'last-stand',
-  name: '捨て身',
-  shortName: '捨身',
-  category: 'ultimate',
-  baseCost: 2,
-  effect: { kind: 'attack', target: 'one', power: 3.0 },
-  selfDown: true,
-};
-
-const greatBlade: ActionSkillDef = {
-  id: 'great-blade',
-  name: '大剣',
-  shortName: '大剣',
-  category: 'ultimate',
-  baseCost: 4,
-  effect: { kind: 'attack', target: 'one', power: 3.5 },
-  element: 'physical',
-};
-
-/** 主人公の必殺。浅層の最初の雑魚なら一撃で沈む威力にしてある */
 const heroFinish: ActionSkillDef = {
   id: 'hero-finish',
-  name: '必殺・断',
-  shortName: '必殺',
+  name: 'インロー',
+  shortName: 'インロー',
   category: 'ultimate',
   baseCost: 3,
-  effect: { kind: 'attack', target: 'one', power: 2.8 },
+  effect: { kind: 'attack', target: 'one', power: 3.0 },
 };
 
 /** 相棒の攻撃魔法。希少な魔法の入口として、一撃は主人公の斬撃より重い */
@@ -110,16 +66,16 @@ const mateHeal: ActionSkillDef = {
 };
 
 /**
- * もう 1 人の相棒 (カクサン) のバフ剥がし。物理と同じコスト規則 (ターン内 +1 で頭打ち) の
- * 1 コストを初期値にする (docs/plan.md「バフ剥がし」)
+ * もう 1 人の相棒 (カクサン) のバフ剥がし。解除の 3 段階のうち最上位「浄化」(2 コスト・全部剥がす)
+ * を持つ (docs/plan.md「バフ剥がし」)。物理と同じコスト規則 (ターン内 +1 で頭打ち) にする
  */
-const dispel: ActionSkillDef = {
-  id: 'dispel',
-  name: 'バフ剥がし',
-  shortName: '剥がし',
+const purge: ActionSkillDef = {
+  id: 'purge',
+  name: '浄化',
+  shortName: '浄化',
   category: 'physical',
-  baseCost: 1,
-  effect: { kind: 'dispel' },
+  baseCost: 2,
+  effect: { kind: 'dispel', scope: 'all' },
 };
 
 /** カクサンのガード 1 枚積み。common-gen.ts の ward1 と同じ定義だが、生成コモンとは
@@ -137,18 +93,17 @@ export interface CharacterEntry {
   id: string;
   name: string;
   faction: Faction;
-  rarity: 'common' | 'rare';
+  /**
+   * 'named' は固定の 3 人 (主人公・相棒 2 人) だけが持つ別格のレアリティ。
+   * 酒場に出ず、雇用上限にも数えず、転生所でも扱えない (docs/plan.md「初期の 2 人」「転生所」)
+   */
+  rarity: 'common' | 'rare' | 'named';
   /** レベル 1 のときの攻撃力。実効値 (レベルなり) は effectiveAttack で計算する */
   baseAttack: number;
   /** レベル 1 のときの体力。実効値は effectiveVitality で計算する */
   baseVitality: number;
   skills: ActionSkillDef[];
   passives: PassiveDef[];
-  /**
-   * レアの入手経路。'tavern' は酒場だけに、'dungeon' はボス前の分岐イベントだけに並ぶ
-   * (docs/plan.md「レアリティと入手」)。コモン (生成キャラ) と主人公・相棒は持たない
-   */
-  source?: 'tavern' | 'dungeon';
   /** 現在レベル。初期値 1 */
   level: number;
   /** 現在の経験値 */
@@ -180,7 +135,7 @@ export function effectiveVitality(entry: CharacterEntry): number {
 }
 
 /**
- * CHARACTERS (固定の主人公・相棒・レア) は module 単位の共有オブジェクトなので、
+ * CHARACTERS (固定の主人公・相棒) は module 単位の共有オブジェクトなので、
  * そのまま owned に積んでレベルを書き込むと、他のセーブ・他のプレイにまで伸びてしまう。
  * 所持に移すときは必ずこれを通し、独立したコピー (レベル 1・経験値 0 の新品) にする
  */
@@ -200,7 +155,8 @@ export function skillLabels(entry: CharacterEntry): string[] {
 
 export const CHARACTERS: readonly CharacterEntry[] = [
   // 固定の 3 人。所持から外れない (roster の初期値に固定で入る)。名前も固定にする
-  // (docs/plan.md「初期の 2 人」。主人公 = コーモン、相棒 = スケサンとカクサン)
+  // (docs/plan.md「初期の 2 人」。主人公 = コーモン、相棒 = スケサンとカクサン)。
+  // rarity は 'named' (酒場に出ない・雇用上限に数えない・転生不可)
   {
     id: 'hero',
     name: 'コーモン',
@@ -208,7 +164,7 @@ export const CHARACTERS: readonly CharacterEntry[] = [
     // 人口の最も少ない陣営なので、陣営倍率を主人公の側から伸ばすのが難しくなる。
     // レベル上限が無い代わりに倍率で伸びにくい、という釣り合いになる
     faction: 'frontier',
-    rarity: 'rare',
+    rarity: 'named',
     baseAttack: 120,
     baseVitality: 60,
     skills: [zeroAttack('hero-slash'), heroFinish],
@@ -228,9 +184,9 @@ export const CHARACTERS: readonly CharacterEntry[] = [
     id: 'mate',
     name: 'スケサン',
     faction: 'order',
-    // 攻撃魔法とヒーリングを併せ持つ、教団の顔にふさわしい構成なのでレア扱いにする
+    // 攻撃魔法とヒーリングを併せ持つ、教団の顔にふさわしい構成なのでネームド扱いにする
     // (docs/plan.md「初期の 3 人」)。スキルと数値そのものは変えない
-    rarity: 'rare',
+    rarity: 'named',
     baseAttack: 90,
     baseVitality: 60,
     skills: [mateBolt, mateHeal],
@@ -249,98 +205,17 @@ export const CHARACTERS: readonly CharacterEntry[] = [
     // 傭兵団に置く。バフ剥がしが無いと自分を固め続けるボスに手が無くなるので、
     // 陣営を問わず最初から持たせる (docs/plan.md「初期の 2 人」「バフ剥がし」)
     faction: 'mercs',
-    rarity: 'rare',
+    rarity: 'named',
     // 攻撃力・体力はコモンの壁役と同程度でよい (common-gen.ts BASE_STATS.wall と揃える)
     baseAttack: 75,
     baseVitality: 90,
-    skills: [dispel, aideWard],
+    skills: [purge, aideWard],
     passives: [],
     level: 1,
     exp: 0,
     maxLevel: 30,
     growth: 1.0,
     curve: 'linear',
-  },
-
-  // レア 4 人。0 コスト攻撃を軸に、基礎値か有能なスキルで差をつける。陣営は散らす。
-  // 4 人を 2 人ずつ酒場限定/ダンジョン限定に分ける (docs/plan.md「レアリティと入手」)。
-  // 名前は所属陣営の題材に沿った固定名にする (docs/plan.md「レアの名前」)。
-  // コモンはこの題材から抽選で引く (common-gen.ts NAME_POOLS) ので、レアの名前は
-  // その候補群と重ならないものを選んである
-  // (王国 = 天気の英語、教団 = 果物のイタリア語、傭兵団 = 酒、辺境 = 山の日本語)。
-  // マナを増やすアクション (魔力譲渡) はレアだけが持つ枠なので、r2 (アボカド) に持たせてある。
-  // それ以外のスキル構成とパラメータは分岐前のまま変えていない
-  {
-    id: 'r1',
-    // テンペスト (tempest, 大嵐)。NAME_POOLS.kingdom (レイン/サンダー/ストームなど) と重複しない
-    name: 'テンペスト',
-    faction: 'kingdom',
-    rarity: 'rare',
-    baseAttack: 140,
-    baseVitality: 60,
-    skills: [zeroAttack('r1-slash'), greatBlade],
-    passives: [],
-    source: 'tavern',
-    level: 1,
-    exp: 0,
-    maxLevel: 32,
-    growth: 1.0,
-    curve: 'linear',
-  },
-  {
-    id: 'r2',
-    // アボカド (avocado)。NAME_POOLS.order (メーラ/ペーラ/ウーヴァなど) と重複しない
-    name: 'アボカド',
-    faction: 'order',
-    rarity: 'rare',
-    baseAttack: 130,
-    baseVitality: 50,
-    // 教団 (回復・支援) の顔として、マナを増やすアクション (魔力譲渡) を持たせる。
-    // レアだけが持つ枠なので、教団の中でも希少な支援役として立たせる
-    skills: [zeroAttack('r2-slash', '一閃', '一閃'), manaGift],
-    passives: [],
-    source: 'dungeon',
-    level: 1,
-    exp: 0,
-    maxLevel: 34,
-    // レアの帯 (growth 1.0〜1.5) の下限に収まるよう 0.9 → 1.0 に上げる (数値は帯合わせのみ)
-    growth: 1.0,
-    curve: 'early',
-  },
-  {
-    id: 'r3',
-    // カルヴァドス (Calvados、林檎の蒸留酒)。NAME_POOLS.mercs (ウォッカ/ジン/ラムなど) と重複しない
-    name: 'カルヴァドス',
-    faction: 'mercs',
-    rarity: 'rare',
-    baseAttack: 135,
-    baseVitality: 70,
-    // 傭兵団 (ガード・体力・身代わり) の顔として、レアの壁役 = ward 2 枚積みを持たせる
-    skills: [zeroAttack('r3-slash', '双撃', '双撃'), ward2],
-    passives: [],
-    source: 'tavern',
-    level: 1,
-    exp: 0,
-    maxLevel: 30,
-    growth: 1.1,
-    curve: 'linear',
-  },
-  {
-    id: 'r4',
-    // ツルギ (剣岳)。NAME_POOLS.frontier (フジ/アサマ/ハクバなど) と重複しない
-    name: 'ツルギ',
-    faction: 'frontier',
-    rarity: 'rare',
-    baseAttack: 150,
-    baseVitality: 40,
-    skills: [zeroAttack('r4-slash'), lastStand],
-    passives: [],
-    source: 'dungeon',
-    level: 1,
-    exp: 0,
-    maxLevel: 36,
-    growth: 1.2,
-    curve: 'late',
   },
 ];
 

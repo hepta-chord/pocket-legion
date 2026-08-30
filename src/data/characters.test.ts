@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { FACTIONS } from './factions';
-import { generateCommon, SKILL_POOLS } from './common-gen';
+import { generateCommon, generateRare, SKILL_POOLS } from './common-gen';
 import { CHARACTERS } from './characters';
 import { Rng } from '../rng';
 
@@ -15,10 +15,10 @@ const COMMON_GROWTH_MAX = 0.8;
 const COMMON_MAX_LEVEL_MIN = 16;
 const COMMON_MAX_LEVEL_MAX = 24;
 
-describe('スケサンのレア化 (docs/plan.md「初期の 3 人」)', () => {
-  it('スケサンは rarity: rare で、スキルと数値 (攻撃魔法・ヒーリング) は変わっていない', () => {
+describe('スケサンのネームド化 (docs/plan.md「初期の 2 人」)', () => {
+  it('スケサンは rarity: named で、スキルと数値 (攻撃魔法・ヒーリング) は変わっていない', () => {
     const mate = CHARACTERS.find((c) => c.id === 'mate')!;
-    expect(mate.rarity).toBe('rare');
+    expect(mate.rarity).toBe('named');
     expect(mate.skills.map((s) => s.id)).toEqual(['mate-bolt', 'mate-heal']);
     expect(mate.baseAttack).toBe(90);
     expect(mate.baseVitality).toBe(60);
@@ -26,16 +26,18 @@ describe('スケサンのレア化 (docs/plan.md「初期の 3 人」)', () => {
 });
 
 describe('レア/コモンの成長の帯 (docs/plan.md「成長カーブ」)', () => {
-  it('固定キャラのレア (主人公を除く) は growth 1.0〜1.5、maxLevel 30〜40 の帯に収まる', () => {
-    // 主人公 (hero) は上限なしの代わりに maxLevel 999・curveRef 30 を固定で持つ例外
-    // (docs/plan.md の指示どおり、この 2 つはそのままにする)
-    const rares = CHARACTERS.filter((c) => c.rarity === 'rare' && c.id !== 'hero');
-    expect(rares.length).toBeGreaterThan(0);
-    for (const c of rares) {
-      expect(c.growth).toBeGreaterThanOrEqual(RARE_GROWTH_MIN);
-      expect(c.growth).toBeLessThanOrEqual(RARE_GROWTH_MAX);
-      expect(c.maxLevel).toBeGreaterThanOrEqual(RARE_MAX_LEVEL_MIN);
-      expect(c.maxLevel).toBeLessThanOrEqual(RARE_MAX_LEVEL_MAX);
+  it('generateRare は growth 1.0〜1.5、maxLevel 30〜40 の帯に収まる (全陣営・多数サンプル)', () => {
+    // レアは固定の名簿を持たず、その場で生成する (docs/plan.md「レアリティと入手」)
+    const rng = new Rng(555);
+    for (const faction of FACTIONS) {
+      for (let i = 0; i < 50; i++) {
+        const c = generateRare(faction, rng, i);
+        expect(c.rarity).toBe('rare');
+        expect(c.growth).toBeGreaterThanOrEqual(RARE_GROWTH_MIN);
+        expect(c.growth).toBeLessThanOrEqual(RARE_GROWTH_MAX);
+        expect(c.maxLevel).toBeGreaterThanOrEqual(RARE_MAX_LEVEL_MIN);
+        expect(c.maxLevel).toBeLessThanOrEqual(RARE_MAX_LEVEL_MAX);
+      }
     }
   });
 
@@ -62,14 +64,15 @@ describe('レア/コモンの成長の帯 (docs/plan.md「成長カーブ」)', 
 });
 
 describe('マナを増やすスキル (魔力譲渡) はレアだけが持つ (docs/plan.md「スキルスロット」)', () => {
-  it('固定キャラでは魔力譲渡 (kind: mana) をレアだけが持ち、コモンは持たない', () => {
-    for (const c of CHARACTERS) {
-      const hasManaSkill = c.skills.some((s) => s.effect.kind === 'mana');
-      if (hasManaSkill) expect(c.rarity).toBe('rare');
+  it('generateRare は魔力譲渡 (kind: mana) を引くことがあり、コモンの生成は持たない', () => {
+    const rng = new Rng(321);
+    let sawManaGift = false;
+    for (let i = 0; i < 200; i++) {
+      const c = generateRare('kingdom', rng, i);
+      expect(c.rarity).toBe('rare');
+      if (c.skills.some((s) => s.effect.kind === 'mana')) sawManaGift = true;
     }
-    // 実際に 1 人 (レア 4 人のうち) 持たせてある
-    const holders = CHARACTERS.filter((c) => c.skills.some((s) => s.effect.kind === 'mana'));
-    expect(holders.length).toBeGreaterThanOrEqual(1);
+    expect(sawManaGift).toBe(true);
   });
 
   it('コモンの生成候補群 (SKILL_POOLS) には魔力譲渡 (kind: mana) が含まれない', () => {

@@ -6,7 +6,7 @@
 import { partyMaxHp, recalcVanguardBonus, type Fighter, type Party } from './battle';
 import { buildFighter, type CharacterEntry } from './data/characters';
 import { BOSS_ALT_EVENT, decideOccurrence, pickEvent, TOTAL_WEIGHT, type EventDef } from './data/events';
-import { sectorById, type Sector } from './data/sectors';
+import { bossDepthAt, sectorById, type Sector } from './data/sectors';
 import { partyFromRosterAndFormation, type Formation } from './formation';
 import { factionMultiplierOf, factionTotals } from './roster';
 import type { Rng } from './rng';
@@ -23,6 +23,11 @@ export interface RunState {
   pending: EventDef | null;
   /** ボスに挑む深度に着いた */
   atBoss: boolean;
+  /**
+   * 奈落のボスを倒した直後。「潜り続ける」か「帰還する」かを選ぶまで進めない
+   * (通常の区画では常に false のまま。docs/plan.md「奈落」)
+   */
+  abyssChoice: boolean;
   /** 出撃メンバー。Fighter は出撃をまたいで生きるので、帰還処理は roster 側の仕事にする */
   party: Party;
   /**
@@ -54,6 +59,7 @@ export function startRun(
     gold: 0,
     pending: null,
     atBoss: false,
+    abyssChoice: false,
     party,
     downed: [],
   };
@@ -65,25 +71,45 @@ export function sectorOf(run: RunState): Sector {
 
 /**
  * 1 歩進めて、着いた先のイベントを決める。
- * ボスの深度に着いたときはイベントを引かずにボス戦になる。
+ * ボスの深度に着いたときはイベントを引かずにボス戦になる (ボスの深度は bossDepthAt で決める。
+ * 通常の区画では sector.depth のまま固定、奈落は 10 の倍数を追いかけ続ける)。
  * ボスの 1 つ手前の深度は、通常の抽選をせず固定でボス前の分岐イベントにする
- * (docs/plan.md「ボス前の分岐イベント」)
+ * (docs/plan.md「ボス前の分岐イベント」)。奈落でもこの仕組みがそのまま働くので、
+ * 39・49・59 階……に分岐イベントが出る
  */
 export function advance(run: RunState, rng: Rng): void {
   run.depth += 1;
   const sector = sectorOf(run);
-  if (run.depth >= sector.depth) {
+  const bossDepth = bossDepthAt(sector, run.depth);
+  if (run.depth >= bossDepth) {
     run.atBoss = true;
     run.pending = null;
     return;
   }
-  if (run.depth === sector.depth - 1) {
+  if (run.depth === bossDepth - 1) {
     run.pending = BOSS_ALT_EVENT;
     return;
   }
   // 二択を持つ定義 (宝・泉) でも、実際に見せるかどうかは 2 割程度の確率でしか出さない
   // (docs/plan.md「イベントの分岐」)。ボス前の分岐イベントはこの抽選を経ず必ず両方出す
   run.pending = decideOccurrence(pickEvent(rng.int(0, TOTAL_WEIGHT - 1)), rng);
+}
+
+/**
+ * 奈落のボスを倒した後「潜り続ける」を選んだときの遷移。
+ * フラグを戻して次の「進む」で深度を進められるようにし、
+ * **HP を全回復してダウンした味方も戻す**。ただし魔法・必殺の出撃通しコストは戻さない。
+ *
+ * 完全に無補給にすると、ボスを倒した直後の消耗そのままで次の 10 階に入ることになり、
+ * 50 階のボスを 97% 倒せる部隊が 60 階には 0% しか届かない崖になっていた (計測で確認)。
+ * 壁の正体を「強い札が撃てなくなること」に一本化すると、
+ * 深さが伸びるほど手数だけで戦う形になり、記録が滑らかに伸びる (docs/plan.md「奈落」)
+ */
+export function continueAbyss(run: RunState): number {
+  run.atBoss = false;
+  run.abyssChoice = false;
+  run.hp = run.maxHp;
+  return reviveDowned(run);
 }
 
 export function damage(run: RunState, amount: number): void {

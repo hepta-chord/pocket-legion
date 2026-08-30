@@ -39,10 +39,10 @@ import {
   type SwapMove,
 } from '../battle';
 import { buildFighter, CHARACTERS, withLevel, type CharacterEntry } from '../data/characters';
-import { generateCommon } from '../data/common-gen';
+import { generateCommon, generateRare } from '../data/common-gen';
 import { makeBoss, makeFoe } from '../data/enemies';
 import { FACTION_HIRE_CAP, FACTION_WEIGHT, FACTIONS, type Faction } from '../data/factions';
-import { sectorById } from '../data/sectors';
+import { bossDepthAt, sectorById } from '../data/sectors';
 import { Rng } from '../rng';
 import { factionMultiplier, factionMultiplierOf, factionTotals, type FactionTotals } from '../roster';
 
@@ -239,8 +239,6 @@ export function playSortie(sectorId: number, rng: Rng, assumedLevel: number, ass
   const mate = withLevel(CHARACTERS.find((c) => c.id === 'mate')!, assumedLevel);
   const aide2 = withLevel(CHARACTERS.find((c) => c.id === 'aide2')!, assumedLevel);
   const startCommons = generateAssumedOwned(rng, assumedLevel, Math.max(0, assumedOwnedCount - 3));
-  // レアは有限 (r1〜r4 の 4 人) なので、ボス前の分岐で引いた分だけ所持 id を追う
-  const ownedRareIds = new Set<string>();
   const initial: CharacterEntry[] = [hero, mate, aide2, ...startCommons];
   // 所持ベースの陣営倍率は出撃時に一度だけ確定させる。以降の recruit・レア加入も
   // この時点の合算 (initialTotals) を近似の土台にする (加入のたびに数え直すほどの精度は測定に要らない)
@@ -295,26 +293,23 @@ export function playSortie(sectorId: number, rng: Rng, assumedLevel: number, ass
   }
 
   // ボス前の分岐イベント。HP が 6 割未満なら回復、以上ならレア加入を選ぶ。
-  // source: 'dungeon' の未所持レアだけが対象 (game.ts の unownedRares と同じ絞り込み)。
-  // 固定の 3 人 (hero/mate/aide2) は source を持たないので、ここでは自然に除外される
+  // レアは固定の名簿を持たずその場で生成する (docs/plan.md「レアリティと入手」) ので、
+  // 「尽きて選べない」分岐は無く、必ず 1 人加入する
   if (hp < maxHp * 0.6) {
     hp = maxHp;
     resetSortieProgress(party);
   } else {
-    const rareCandidates = CHARACTERS.filter((c) => c.rarity === 'rare' && c.source === 'dungeon' && !ownedRareIds.has(c.id));
-    if (rareCandidates.length > 0) {
-      const picked = withLevel(rng.pick(rareCandidates), assumedLevel);
-      ownedRareIds.add(picked.id);
-      const fighter = buildFighter(picked, factionMultiplier(initialTotals, picked.faction));
-      const idx = party.front.findIndex((f) => f === null);
-      if (idx >= 0) party.front[idx] = fighter;
-      else party.reserve.push(fighter);
-      maxHp = partyMaxHp(party);
-    }
+    const faction = rng.pick(FACTIONS);
+    const picked = withLevel(generateRare(faction, rng, simCommonSerial++), assumedLevel);
+    const fighter = buildFighter(picked, factionMultiplier(initialTotals, faction));
+    const idx = party.front.findIndex((f) => f === null);
+    if (idx >= 0) party.front[idx] = fighter;
+    else party.reserve.push(fighter);
+    maxHp = partyMaxHp(party);
   }
 
   // 区画の最深部のボス。雑魚と違って長期戦になるので、上限もターン数も別に持つ
-  const boss = startBattle(party, hp, maxHp, makeBoss(sectorId, rng), rng);
+  const boss = startBattle(party, hp, maxHp, makeBoss(sectorId, rng, sectorById(sectorId).depth), rng);
   let bossTurns = 0;
   while (boss.outcome === 'ongoing' && bossTurns < BOSS_TURN_CAP) {
     playTurn(boss, rng);
@@ -406,4 +401,125 @@ export function measure(
     bossWinRate: bossTries === 0 ? 0 : bossWins / bossTries,
     avgBossTurns: bossTries === 0 ? 0 : bossTurns / bossTries,
   };
+}
+
+// ---------------------------------------------------------------------------
+// 奈落 (docs/batch-abyss.md 7 節)
+//
+// 通常区画と違い「どこまで潜れたか」だけが指標になるので、生還率やボス勝率は測らない。
+// 自動操縦は常に「潜り続ける」に固定する。帰還の判断は人間のものなので、自動化して
+// 閾値を設けると閾値の設定次第で数字が動いてしまい、奈落係数の目安として読めなくなるため
+
+const ABYSS_SECTOR_ID = 4;
+
+/**
+ * 奈落のボスを倒して「潜り続ける」ときのダウン復帰。run.ts の reviveDowned に当たる処理を
+ * sim の party 表現 (RunState を持たない) で行う。resetSortieProgress は呼ばない
+ * (コストの累積は戻さないのが奈落の壁そのものであるため)
+ */
+function revivePartyForAbyss(party: Party): void {
+  refillFront(party);
+}
+/** 安全弁。abyssMul は深度とともに伸び続けるのでいずれ全滅する想定だが、念のため上限を切る */
+const ABYSS_SEGMENT_CAP = 200;
+
+/** 奈落を全滅するまで潜り続けて測る 1 回ぶん。戻り値は倒れた深度 (=その回の最深到達深度) */
+export function playAbyssSortie(rng: Rng, assumedLevel: number, assumedOwnedCount: number): number {
+  const sector = sectorById(ABYSS_SECTOR_ID);
+  const hero = withLevel(CHARACTERS.find((c) => c.id === 'hero')!, assumedLevel);
+  const mate = withLevel(CHARACTERS.find((c) => c.id === 'mate')!, assumedLevel);
+  const aide2 = withLevel(CHARACTERS.find((c) => c.id === 'aide2')!, assumedLevel);
+  const startCommons = generateAssumedOwned(rng, assumedLevel, Math.max(0, assumedOwnedCount - 3));
+  const initial: CharacterEntry[] = [hero, mate, aide2, ...startCommons];
+  const initialTotals = factionTotals(initial);
+  const fighters = initial.map((c) => buildFighter(c, factionMultiplierOf(initialTotals, c)));
+  const party: Party = newParty(fighters.slice(0, 6), fighters.slice(6));
+  let maxHp = partyMaxHp(party);
+  let hp = maxHp;
+  let depth = sector.from;
+
+  for (let segment = 0; segment < ABYSS_SEGMENT_CAP; segment++) {
+    // その区間のボス深度を先に決め、雑魚 5 連戦をそこまでの間に等間隔で置く。
+    // 「+2 ずつ 5 歩」で近似すると刻みがボス深度とずれ、最初のボス (40 階) を跨いで
+    // いきなり 50 階のボスと戦う形になってしまう (計測が実際の進行と食い違う)
+    const segmentStart = depth;
+    const bossDepth = bossDepthAt(sector, segmentStart + 1);
+    for (let step = 0; step < 5; step++) {
+      depth = segmentStart + Math.round(((step + 1) * (bossDepth - segmentStart)) / 6);
+      if (rng.chance(RECRUIT_CHANCE_PER_STEP)) addRecruit(party, rng, assumedLevel, initialTotals);
+      if (rng.chance(SPRING_CHANCE_PER_STEP)) {
+        hp = Math.min(maxHp, hp + Math.round(maxHp * 0.5));
+        resetSortieProgress(party);
+      }
+      maxHp = partyMaxHp(party);
+      // makeFoe は depth なりに abyssMul も掛けて生成する (data/enemies.ts)
+      const state = startBattle(party, hp, maxHp, makeFoe(depth, rng, false), rng);
+      let turns = 0;
+      while (state.outcome === 'ongoing' && turns < TURN_CAP) {
+        playTurn(state, rng);
+        turns += 1;
+      }
+      if (state.outcome !== 'victory') return depth;
+      hp = state.hp;
+      hp = Math.min(maxHp, hp + Math.round(maxHp * 0.2));
+      refillFront(party);
+    }
+
+    // ボス前の分岐イベント。playSortie と同じ判定 (HP 6 割未満なら回復、以上ならレア加入)
+    if (hp < maxHp * 0.6) {
+      hp = maxHp;
+      resetSortieProgress(party);
+    } else {
+      const faction = rng.pick(FACTIONS);
+      const picked = withLevel(generateRare(faction, rng, simCommonSerial++), assumedLevel);
+      const fighter = buildFighter(picked, factionMultiplier(initialTotals, faction));
+      const idx = party.front.findIndex((f) => f === null);
+      if (idx >= 0) party.front[idx] = fighter;
+      else party.reserve.push(fighter);
+      maxHp = partyMaxHp(party);
+    }
+
+    const boss = startBattle(party, hp, maxHp, makeBoss(ABYSS_SECTOR_ID, rng, bossDepth), rng);
+    let bossTurns = 0;
+    while (boss.outcome === 'ongoing' && bossTurns < BOSS_TURN_CAP) {
+      playTurn(boss, rng);
+      bossTurns += 1;
+    }
+    if (boss.outcome !== 'victory') return bossDepth;
+
+    // 「潜り続ける」固定。HP は全回復しダウンも戻るが、魔法・必殺の出撃通しコストは
+    // 戻さない (run.ts continueAbyss と同じ扱い。docs/plan.md「奈落」)
+    revivePartyForAbyss(party);
+    maxHp = partyMaxHp(party);
+    hp = maxHp;
+    depth = bossDepth;
+  }
+  return depth;
+}
+
+export interface AbyssReport {
+  sorties: number;
+  /** 平均到達深度 */
+  avgDepth: number;
+  /** 300 回のうち最も深く潜れた到達深度 */
+  maxDepth: number;
+  /** 10 の倍数の深度 (=ボスのいる深度) ごとの到達率。奈落はボスが関門になるのでここを見る */
+  reach: { depth: number; rate: number }[];
+}
+
+/**
+ * @param assumedLevel 出撃前に全員へ振る想定レベル (奈落は想定レベル 30 で測る。docs/batch-abyss.md 7 節)
+ * @param assumedOwnedCount 出撃前に持たせる想定の所持人数 (奈落は想定 20 人で測る)
+ */
+export function measureAbyss(sorties: number, seed: number, assumedLevel: number, assumedOwnedCount: number): AbyssReport {
+  const rng = new Rng(seed);
+  const depths: number[] = [];
+  for (let i = 0; i < sorties; i++) depths.push(playAbyssSortie(rng, assumedLevel, assumedOwnedCount));
+  const total = depths.reduce((a, b) => a + b, 0);
+  const max = depths.reduce((a, b) => (b > a ? b : a), 0);
+  const reach = [40, 50, 60, 70].map((depth) => ({
+    depth,
+    rate: depths.filter((d) => d >= depth).length / sorties,
+  }));
+  return { sorties, avgDepth: total / sorties, maxDepth: max, reach };
 }

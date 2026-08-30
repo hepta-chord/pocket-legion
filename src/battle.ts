@@ -143,13 +143,18 @@ export function refillFront(party: Party): void {
 }
 
 /** 前衛のパッシブを合算する。前衛にいる間だけ効く */
-function hookSum(party: Party, key: 'manaPerTurn' | 'defenseRate' | 'telegraph'): number {
+function hookSum(party: Party, key: 'manaPerTurn' | 'defenseRate' | 'telegraph' | 'goldRate'): number {
   let v = 0;
   for (const f of party.front) {
     if (!f) continue;
     for (const p of f.passives) v += p.hooks[key] ?? 0;
   }
   return v;
+}
+
+/** 前衛の商才 (goldRate) パッシブの合算。戦闘報酬の金計算 (game.ts) に使う */
+export function goldRateBonus(party: Party): number {
+  return hookSum(party, 'goldRate');
 }
 
 /**
@@ -189,10 +194,32 @@ function tickBuffStack(buff: BuffStack): void {
   if (buff.turns <= 0) buff.stacks = 0;
 }
 
-/** バフ剥がし。1 回で全部 0 に戻す (docs/plan.md「バフ剥がし」) */
+/** バフ剥がし (浄化)。1 回で全部 0 に戻す (docs/plan.md「バフ剥がし」) */
 function clearBuffStack(buff: BuffStack): void {
   buff.stacks = 0;
   buff.turns = 0;
+}
+
+/** 剥がした対象のラベル (ログ用)。'cheer' | 'ward' | null (剥がすものが無かった) */
+type DispelHit = 'cheer' | 'ward' | null;
+
+/**
+ * バフ剥がし (乱し・崩し、敵の行動枠の解除)。鼓舞・ward の合算スタックからランダムに 1 枚だけ剥がす。
+ * 枚数で重み付けした抽選にする (2 枚積んでいれば 2 枚ぶんの確率で選ばれる)。
+ * 剥がして 0 枚になったら turns も 0 に戻す (tickBuffStack が自然にゼロへ落ちる形と揃える)
+ */
+function removeOneStack(cheer: BuffStack, ward: BuffStack, rng: Rng): DispelHit {
+  const total = cheer.stacks + ward.stacks;
+  if (total <= 0) return null;
+  const roll = rng.int(0, total - 1);
+  if (roll < cheer.stacks) {
+    cheer.stacks -= 1;
+    if (cheer.stacks <= 0) cheer.turns = 0;
+    return 'cheer';
+  }
+  ward.stacks -= 1;
+  if (ward.stacks <= 0) ward.turns = 0;
+  return 'ward';
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +266,17 @@ export interface EnemyDef {
   bigEvery: number;
   /** 大技の威力。通常攻撃に対する倍率。大技はダウンを起こさない */
   bigMul: number;
+  /** 通常攻撃を刻む回数 (省略 = 1)。1 ヒットの威力は attack/attackHits で、合計は変わらない。
+   * 乱数はヒットごとに振る (docs/plan.md「多段攻撃」) */
+  attackHits?: number;
+  /** 大技を刻む回数 (省略 = 1)。1 ヒットの威力は bigMul/bigHits */
+  bigHits?: number;
+  /**
+   * 大技の先頭に置く「ダメージ 0 の解除ヒット」が剥がす、味方の鼓舞・ガードの枚数
+   * (省略 = 0。ランダムに 1 枚ずつ剥がす)。バリアがあれば、この解除ヒットだけが
+   * 先頭ヒットとして無効化され、後続のダメージヒットは全部通る (docs/plan.md「バリアの再定義」)
+   */
+  bigDispel?: number;
   /** 大技の名前。予告バッジに書き下す (「大N」ではなく実際の技名を見せるため)。
    * ボスは固有の名前を持たせ、雑魚は「大技」のような総称でよい */
   bigName: string;
@@ -453,25 +491,49 @@ export function whyCannotUse(state: BattleState, slot: number, skillIndex: numbe
   return null;
 }
 
-function hitEnemy(state: BattleState, attacker: Fighter, def: ActionSkillDef, enemy: EnemyState, rng: Rng): void {
-  if (def.effect.kind !== 'attack') return;
-  // コンボはその攻撃の発動時点の値を使う。1 発目は等倍、2 発目 +15%、3 発目 +30% ...
+/**
+ * 1 ヒットぶんのダメージ計算。コンボはその時点の値を使ってから 1 進める
+ * (1 ヒット目は現在のコンボ、2 ヒット目は +1 された値、の順になる)。
+ * ログはここでは書かず、呼び出し側 (hitEnemy) がヒットぶんまとめて 1 行にする
+ */
+function computeHit(
+  state: BattleState,
+  attacker: Fighter,
+  def: ActionSkillDef,
+  power: number,
+  target: 'one' | 'all',
+  enemy: EnemyState,
+  rng: Rng,
+): number {
   const comboMul = 1 + 0.15 * state.combo;
   const cheerMul = 1 + CHEER_RATE_PER_STACK * state.cheer.stacks;
-  let base = effectiveFighterAttack(attacker) * def.effect.power * cheerMul * comboMul;
+  let base = effectiveFighterAttack(attacker) * power * cheerMul * comboMul;
   // 敵は 1 体にまとめて表すが、全体攻撃は元の頭数 (groupSize) ぶん威力が伸びる。
   // でないと「群れに強い」という全体攻撃の性格が消えるため
-  if (def.effect.target === 'all') base *= 1 + 0.3 * (enemy.def.groupSize - 1);
+  if (target === 'all') base *= 1 + 0.3 * (enemy.def.groupSize - 1);
   let dmg = Math.round(base * (0.6 + 0.4 * rng.next())) - enemy.def.defense;
   // 敵の自己防御 (ward)。プレイヤーの防御・ward と同じ「積むほど軽減」の考え方を敵にも適用する
   dmg = Math.round(dmg * (1 - WARD_RATE_PER_STACK * enemy.ward.stacks));
-  const resisted = enemy.def.resist === elementOf(def);
-  if (resisted) dmg = Math.round(dmg / 2);
+  if (enemy.def.resist === elementOf(def)) dmg = Math.round(dmg / 2);
   dmg = Math.max(1, dmg);
   enemy.hp = Math.max(0, enemy.hp - dmg);
   state.combo += 1;
-  const note = resisted ? ' (耐性)' : '';
-  addLog(state, 'good', `${attacker.name} の${def.name}。${enemy.def.name} に ${dmg}${note}。`);
+  return dmg;
+}
+
+/**
+ * attack エフェクトをヒット数ぶんループする (docs/plan.md「多段攻撃」)。
+ * 敵の HP が尽きたら以後のヒットは打たない (不発)。ログは 1 行にまとめる
+ */
+function hitEnemy(state: BattleState, attacker: Fighter, def: ActionSkillDef, enemy: EnemyState, rng: Rng): void {
+  if (def.effect.kind !== 'attack') return;
+  const hits = def.effect.hits ?? 1;
+  const dmgs: number[] = [];
+  for (let i = 0; i < hits && enemy.hp > 0; i++) {
+    dmgs.push(computeHit(state, attacker, def, def.effect.power, def.effect.target, enemy, rng));
+  }
+  const note = enemy.def.resist === elementOf(def) ? ' (耐性)' : '';
+  addLog(state, 'good', `${attacker.name} の${def.name}。${enemy.def.name} に ${dmgs.join('、')}${note}。`);
 }
 
 /** 戦闘中に使う回復薬。マナもコンボも動かさない、battle.ts の外にある持ち物の効果 */
@@ -521,10 +583,28 @@ export function useSkill(state: BattleState, slot: number, skillIndex: number, r
     state.barrier = true;
     addLog(state, 'good', `${f.name} の${s.def.name}。バリアを張った。`);
   } else if (e.kind === 'dispel') {
-    // 味方が使う側なので、剥がす相手は敵の鼓舞・ward になる (敵が使う側の applyNormalAction は逆に味方を剥がす)
-    clearBuffStack(state.enemy.cheer);
-    clearBuffStack(state.enemy.ward);
-    addLog(state, 'good', `${f.name} の${s.def.name}。${state.enemy.def.name} の鼓舞と防御を剥がした。`);
+    // 味方が使う側なので、剥がす相手は敵の鼓舞・ward になる (敵が使う側の applyNormalAction は逆に味方を剥がす)。
+    // power があれば、剥がす前にその倍率の攻撃を 1 発入れる (崩し。コンボにも乗る)
+    let hitNote = '';
+    if (e.power && state.enemy.hp > 0) {
+      const dmg = computeHit(state, f, s.def, e.power, 'one', state.enemy, rng);
+      hitNote = `${dmg} 与えて、`;
+    }
+    if (e.scope === 'all') {
+      clearBuffStack(state.enemy.cheer);
+      clearBuffStack(state.enemy.ward);
+      addLog(state, 'good', `${f.name} の${s.def.name}。${hitNote}${state.enemy.def.name} の鼓舞と防御を剥がした。`);
+    } else {
+      const hit = removeOneStack(state.enemy.cheer, state.enemy.ward, rng);
+      const label = hit === 'cheer' ? '鼓舞' : hit === 'ward' ? 'ガード' : null;
+      addLog(
+        state,
+        'good',
+        label
+          ? `${f.name} の${s.def.name}。${hitNote}${state.enemy.def.name} の${label}が 1 枚消えた。`
+          : `${f.name} の${s.def.name}。${hitNote}剥がすものが無かった。`,
+      );
+    }
   } else if (e.kind === 'mana') {
     // 上限 (MANA_CAP) は超えない。コストは既に引いてあるので、ここで足すぶんが正味の増加になる
     state.mana = Math.min(MANA_CAP, state.mana + e.amount);
@@ -696,17 +776,46 @@ function enemyCheerMul(enemy: EnemyState): number {
   return 1 + CHEER_RATE_PER_STACK * enemy.cheer.stacks;
 }
 
-/** 大技。防御・ward の軽減は乗るが、ダウンは起こさない (guardBreak は廃止) */
-function doBig(state: BattleState, enemy: EnemyState): void {
-  if (state.barrier) {
+/**
+ * 大技。防御・ward の軽減は乗るが、ダウンは起こさない (guardBreak は廃止)。
+ *
+ * バリアが無効化するのは列の先頭ヒットだけ (docs/plan.md「バリアの再定義」)。
+ * bigDispel があれば「ダメージ 0 の解除ヒット」を先頭に置くので、バリアがあれば
+ * 解除だけが防がれて消え、後続の bigHits ぶんのダメージヒットは全部通る。
+ * bigDispel が無ければ先頭のダメージヒットがバリアの対象になり、残りのヒットは通る
+ * (多段の大技をバリア 1 枚で受け切れない作りにするため)
+ */
+function doBig(state: BattleState, enemy: EnemyState, rng: Rng): void {
+  let barrierUsed = false;
+  const tryBlockFirstHit = (): boolean => {
+    if (barrierUsed || !state.barrier) return false;
     state.barrier = false;
-    addLog(state, 'good', `バリアが${enemy.def.name}の大技を防いだ。`);
-    return;
+    barrierUsed = true;
+    return true;
+  };
+
+  const dispelN = enemy.def.bigDispel ?? 0;
+  if (dispelN > 0) {
+    if (!tryBlockFirstHit()) {
+      for (let i = 0; i < dispelN; i++) {
+        const hit = removeOneStack(state.cheer, state.ward, rng);
+        if (hit) addLog(state, 'warn', `${enemy.def.name} の大技。${hit === 'cheer' ? '鼓舞' : 'ガード'} が 1 枚消えた。`);
+      }
+    }
   }
-  const raw = enemy.def.attack * enemy.def.bigMul * enemyCheerMul(enemy);
-  const dmg = Math.max(0, Math.round(raw * damageReduction(state)));
-  state.hp = Math.max(0, state.hp - dmg);
-  addLog(state, 'bad', `${enemy.def.name} の大技。${dmg} 受けた。`);
+
+  const hits = enemy.def.bigHits ?? 1;
+  const perHitMul = enemy.def.bigMul / hits;
+  const dmgs: number[] = [];
+  for (let i = 0; i < hits; i++) {
+    if (tryBlockFirstHit()) continue;
+    const raw = enemy.def.attack * perHitMul * enemyCheerMul(enemy);
+    const dmg = Math.max(0, Math.round(raw * damageReduction(state)));
+    state.hp = Math.max(0, state.hp - dmg);
+    dmgs.push(dmg);
+  }
+  if (barrierUsed) addLog(state, 'good', `バリアが${enemy.def.name}の大技を防いだ。`);
+  if (dmgs.length > 0) addLog(state, 'bad', `${enemy.def.name} の大技。${dmgs.join('、')} 受けた。`);
 }
 
 /** ダウン攻撃。防御・ward では防げず、バリアと身代わりだけが対抗手段 */
@@ -732,15 +841,25 @@ function doDownstrike(state: BattleState, enemy: EnemyState, rng: Rng): void {
 function applyNormalAction(state: BattleState, enemy: EnemyState, action: EnemyAction, rng: Rng): void {
   switch (action.kind) {
     case 'attack': {
-      if (state.barrier) {
-        state.barrier = false;
-        addLog(state, 'good', `バリアが${enemy.def.name}の攻撃を防いだ。`);
-        return;
+      // バリアが防ぐのは列の先頭ヒットだけ (doBig と同じ考え方)。attackHits ≥ 2 の敵には
+      // バリア 1 枚で受け切れず、残りのヒットはガード・防御で受けさせる (docs/plan.md「多段攻撃」)
+      let barrierUsed = false;
+      const hits = enemy.def.attackHits ?? 1;
+      const perHitAttack = enemy.def.attack / hits;
+      const dmgs: number[] = [];
+      for (let i = 0; i < hits; i++) {
+        if (!barrierUsed && state.barrier) {
+          state.barrier = false;
+          barrierUsed = true;
+          continue;
+        }
+        const raw = perHitAttack * enemyCheerMul(enemy) * (0.5 + 0.5 * rng.next());
+        const dmg = Math.max(0, Math.round(raw * damageReduction(state)));
+        state.hp = Math.max(0, state.hp - dmg);
+        dmgs.push(dmg);
       }
-      const raw = enemy.def.attack * enemyCheerMul(enemy) * (0.5 + 0.5 * rng.next());
-      const dmg = Math.max(0, Math.round(raw * damageReduction(state)));
-      state.hp = Math.max(0, state.hp - dmg);
-      addLog(state, 'bad', `${enemy.def.name} の攻撃。${dmg} 受けた。`);
+      if (barrierUsed) addLog(state, 'good', `バリアが${enemy.def.name}の攻撃を防いだ。`);
+      if (dmgs.length > 0) addLog(state, 'bad', `${enemy.def.name} の攻撃。${dmgs.join('、')} 受けた。`);
       return;
     }
     case 'cheer':
@@ -751,12 +870,14 @@ function applyNormalAction(state: BattleState, enemy: EnemyState, action: EnemyA
       addBuffStack(enemy.ward, 1);
       addLog(state, 'warn', `${enemy.def.name} が身を固めた。`);
       return;
-    case 'dispel':
-      // 敵が使う側なので、剥がす相手は味方の鼓舞・ward になる (useSkill の dispel とは逆側)
-      clearBuffStack(state.cheer);
-      clearBuffStack(state.ward);
-      addLog(state, 'warn', `${enemy.def.name} の剥がし。鼓舞とガードが消えた。`);
+    case 'dispel': {
+      // 敵が使う側なので、剥がす相手は味方の鼓舞・ward になる (useSkill の dispel とは逆側)。
+      // 行動枠の解除はランダムに 1 枚だけ (中層ボスに全剥がしをさせると鼓舞・ガードが
+      // 一切維持できなくなるため。docs/plan.md「バフ剥がし」)。バリアには消費されない
+      const hit = removeOneStack(state.cheer, state.ward, rng);
+      if (hit) addLog(state, 'warn', `${enemy.def.name} の剥がし。${hit === 'cheer' ? '鼓舞' : 'ガード'} が 1 枚消えた。`);
       return;
+    }
     case 'none':
       // 何もしない。空振りのターンを作る手なので、ログには残さない
       return;
@@ -842,7 +963,7 @@ function rollNextActions(enemy: EnemyState, rng: Rng): EnemyAction[] {
 function resolveEnemyTurn(state: BattleState, enemy: EnemyState, rng: Rng): void {
   enemy.bigCountdown -= 1;
   if (enemy.bigCountdown <= 0) {
-    doBig(state, enemy);
+    doBig(state, enemy, rng);
     enemy.bigCountdown = enemy.def.bigEvery;
     enemy.nextActions = rollNextActions(enemy, rng);
     return;
