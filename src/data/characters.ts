@@ -12,9 +12,10 @@ import type { Faction } from '../data/factions';
 import type { ActionSkillDef, PassiveDef } from '../data/skills';
 
 /** レアの 0 コスト通常攻撃。タダでコンボを起点にできるのがレアの価値になる */
-const zeroAttack = (id: string, name = '斬撃'): ActionSkillDef => ({
+const zeroAttack = (id: string, name = '斬撃', shortName = '斬撃'): ActionSkillDef => ({
   id,
   name,
+  shortName,
   category: 'physical',
   baseCost: 0,
   effect: { kind: 'attack', target: 'one', power: 1.0 },
@@ -24,6 +25,7 @@ const zeroAttack = (id: string, name = '斬撃'): ActionSkillDef => ({
 const commonAttack = (id: string): ActionSkillDef => ({
   id,
   name: '通常攻撃',
+  shortName: '攻撃',
   category: 'physical',
   baseCost: 1,
   effect: { kind: 'attack', target: 'one', power: 1.0 },
@@ -33,17 +35,31 @@ const commonAttack = (id: string): ActionSkillDef => ({
 const heavyAttack = (id: string): ActionSkillDef => ({
   id,
   name: '強攻撃',
+  shortName: '強撃',
   category: 'physical',
   baseCost: 2,
   effect: { kind: 'attack', target: 'one', power: 1.8 },
 });
 
+// 全体攻撃は敵の群れの規模で威力が伸びる (battle.ts)。
+// 単体スキルより 1 発が軽いぶん、群れに当てたときだけ割に合う札になる。
+// 物理と魔法に 1 つずつ置いて、どちらの主力でも群れへの答えを持てるようにする
 const sweep: ActionSkillDef = {
   id: 'sweep',
   name: '薙ぎ払い',
+  shortName: '薙ぎ',
   category: 'physical',
   baseCost: 1,
   effect: { kind: 'attack', target: 'all', power: 0.8 },
+};
+
+const storm: ActionSkillDef = {
+  id: 'storm',
+  name: '火群',
+  shortName: '火群',
+  category: 'magic',
+  baseCost: 2,
+  effect: { kind: 'attack', target: 'all', power: 1.4 },
 };
 
 // 魔法は希少なぶん、物理の連打より一撃をはっきり強くする。
@@ -51,6 +67,7 @@ const sweep: ActionSkillDef = {
 const holyBolt: ActionSkillDef = {
   id: 'holy-bolt',
   name: '光弾',
+  shortName: '光弾',
   category: 'magic',
   baseCost: 1,
   effect: { kind: 'attack', target: 'one', power: 2.0 },
@@ -59,58 +76,86 @@ const holyBolt: ActionSkillDef = {
 const pray: ActionSkillDef = {
   id: 'pray',
   name: '祈り',
+  shortName: '祈り',
   category: 'magic',
   baseCost: 2,
   effect: { kind: 'heal', power: 0.4 },
 };
 
-const cheer: ActionSkillDef = {
+/** 鼓舞 1 枚積む。コモンの支援役が持つ */
+const cheer1: ActionSkillDef = {
   id: 'cheer',
   name: '鼓舞',
-  category: 'magic',
+  shortName: '鼓舞',
+  category: 'physical',
   baseCost: 1,
-  effect: { kind: 'buff', power: 0.4 },
+  effect: { kind: 'cheer', stacks: 1 },
+};
+
+/** ward (被ダメージ減) を 1 枚積む。コモンの壁役が持つ */
+const ward1: ActionSkillDef = {
+  id: 'ward1',
+  name: 'ガード',
+  shortName: 'ガード',
+  category: 'physical',
+  baseCost: 1,
+  effect: { kind: 'ward', stacks: 1 },
+};
+
+/** 鼓舞を一度に 2 枚積む。レアの支援役が持つ上位版 */
+const cheer2: ActionSkillDef = {
+  id: 'cheer2',
+  name: '大鼓舞',
+  shortName: '大鼓舞',
+  category: 'physical',
+  baseCost: 2,
+  effect: { kind: 'cheer', stacks: 2 },
+};
+
+/** ward を一度に 2 枚積む。レアの壁役が持つ上位版 */
+const ward2: ActionSkillDef = {
+  id: 'ward2',
+  name: '鉄壁',
+  shortName: '鉄壁',
+  category: 'physical',
+  baseCost: 2,
+  effect: { kind: 'ward', stacks: 2 },
 };
 
 const barrier: ActionSkillDef = {
   id: 'barrier',
   name: '守りの膜',
+  shortName: '守膜',
   category: 'magic',
   baseCost: 2,
   effect: { kind: 'barrier' },
 };
 
-const greatBlade: ActionSkillDef = {
-  id: 'great-blade',
-  name: '大剣',
-  category: 'ultimate',
-  baseCost: 4,
-  effect: { kind: 'attack', target: 'one', power: 3.5 },
-  element: 'physical',
-};
-
 const lastStand: ActionSkillDef = {
   id: 'last-stand',
   name: '捨て身',
+  shortName: '捨身',
   category: 'ultimate',
   baseCost: 2,
   effect: { kind: 'attack', target: 'one', power: 3.0 },
   selfDown: true,
 };
 
-const finale: ActionSkillDef = {
-  id: 'finale',
-  name: '終の一撃',
+const greatBlade: ActionSkillDef = {
+  id: 'great-blade',
+  name: '大剣',
+  shortName: '大剣',
   category: 'ultimate',
-  baseCost: 5,
-  effect: { kind: 'attack', target: 'all', power: 5.0 },
-  oncePerSortie: true,
+  baseCost: 4,
+  effect: { kind: 'attack', target: 'one', power: 3.5 },
+  element: 'physical',
 };
 
 /** 主人公の必殺。浅層の最初の雑魚なら一撃で沈む威力にしてある */
 const heroFinish: ActionSkillDef = {
   id: 'hero-finish',
   name: '必殺・断',
+  shortName: '必殺',
   category: 'ultimate',
   baseCost: 3,
   effect: { kind: 'attack', target: 'one', power: 2.8 },
@@ -120,6 +165,7 @@ const heroFinish: ActionSkillDef = {
 const mateBolt: ActionSkillDef = {
   id: 'mate-bolt',
   name: '攻撃魔法',
+  shortName: '魔法',
   category: 'magic',
   baseCost: 1,
   effect: { kind: 'attack', target: 'one', power: 2.0 },
@@ -129,13 +175,14 @@ const mateBolt: ActionSkillDef = {
 const mateHeal: ActionSkillDef = {
   id: 'mate-heal',
   name: 'ヒーリング',
+  shortName: '回復',
   category: 'magic',
   baseCost: 1,
   effect: { kind: 'heal', power: 0.3 },
 };
 
 const spring: PassiveDef = { id: 'spring', name: '泉脈', hooks: { manaPerTurn: 1 } };
-const wall: PassiveDef = { id: 'wall', name: '盾構え', hooks: { guardRate: 0.1 } };
+const wall: PassiveDef = { id: 'wall', name: '盾構え', hooks: { defenseRate: 0.1 } };
 const scout: PassiveDef = { id: 'scout', name: '斥候', hooks: { telegraph: 1 } };
 const bodyguard: PassiveDef = { id: 'bodyguard', name: '身代わり', hooks: { cover: true } };
 
@@ -213,11 +260,11 @@ export const CHARACTERS: readonly CharacterEntry[] = [
     price: 120,
     attack: 100,
     vitality: 40,
-    skills: [heavyAttack('k3-heavy'), commonAttack('k3-attack')],
+    skills: [heavyAttack('k3-heavy'), sweep],
     passives: [],
   },
 
-  // 教団 3 人。祈り・光弾・鼓舞・バリアを分担する
+  // 教団 3 人。祈り・光弾・鼓舞・バリアを分担する。司祭は支援役 (鼓舞 1)
   {
     id: 'o1',
     name: '教団の司祭',
@@ -226,7 +273,7 @@ export const CHARACTERS: readonly CharacterEntry[] = [
     price: 120,
     attack: 80,
     vitality: 50,
-    skills: [pray, cheer],
+    skills: [pray, cheer1],
     passives: [],
   },
   {
@@ -237,7 +284,7 @@ export const CHARACTERS: readonly CharacterEntry[] = [
     price: 120,
     attack: 80,
     vitality: 50,
-    skills: [holyBolt],
+    skills: [holyBolt, storm],
     passives: [scout],
   },
   {
@@ -252,7 +299,7 @@ export const CHARACTERS: readonly CharacterEntry[] = [
     passives: [wall],
   },
 
-  // 傭兵団 2 人。身代わり持ちと盾構え持ち
+  // 傭兵団 2 人。身代わり役と、壁役 (ward 1) を持つ盾役
   {
     id: 'm1',
     name: '傭兵の身代わり役',
@@ -272,7 +319,7 @@ export const CHARACTERS: readonly CharacterEntry[] = [
     price: 120,
     attack: 90,
     vitality: 90,
-    skills: [heavyAttack('m2-heavy')],
+    skills: [ward1],
     passives: [wall],
   },
 
@@ -296,7 +343,8 @@ export const CHARACTERS: readonly CharacterEntry[] = [
     price: 400,
     attack: 130,
     vitality: 50,
-    skills: [zeroAttack('r2-slash', '一閃'), finale],
+    // 教団 (回復・支援) の顔として、レアの支援役 = 鼓舞 2 枚積みを持たせる
+    skills: [zeroAttack('r2-slash', '一閃', '一閃'), cheer2],
     passives: [],
   },
   {
@@ -307,7 +355,8 @@ export const CHARACTERS: readonly CharacterEntry[] = [
     price: 400,
     attack: 135,
     vitality: 70,
-    skills: [zeroAttack('r3-slash', '双撃'), sweep],
+    // 傭兵団 (ガード・体力・身代わり) の顔として、レアの壁役 = ward 2 枚積みを持たせる
+    skills: [zeroAttack('r3-slash', '双撃', '双撃'), ward2],
     passives: [],
   },
   {
@@ -333,5 +382,6 @@ export function buildFighter(entry: CharacterEntry): Fighter {
     skills: entry.skills.map(makeSkillState),
     passives: entry.passives,
     downed: false,
+    stunnedUntil: 0,
   };
 }

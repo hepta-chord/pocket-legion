@@ -2,6 +2,7 @@ import './style.css';
 import type { SwapMove } from './battle';
 import { FACTION_NAMES, FACTIONS, type Faction } from './data/factions';
 import { addLog, newGame, step, toViewModel, type Action, type GameState } from './game';
+import { eventIconFor } from './render/event-icons';
 import { portraitFor } from './render/portraits';
 import type { Renderer } from './render/renderer';
 import { TextRenderer } from './render/text-renderer';
@@ -64,13 +65,23 @@ interface PickerConfig {
 let picker: PickerConfig | null = null;
 /** 陣営の絞り込み。ピッカーを開き直すたび 'all' に戻す */
 let pickerFactionFilter: 'all' | Faction = 'all';
-/** タップして開いた詳細ポップアップの対象。null なら閉じている */
-let detailRow: (FormationCharacterView & { placedSlot: number | null }) | null = null;
+
+/**
+ * タップして開く詳細ポップアップ (モーダル)。編成・交代のピッカー行と酒場のカードが共有する。
+ * 実行ボタンのラベルと挙動だけが呼び出し側で違う (配置 / 雇用)。null なら閉じている
+ */
+interface DetailModalConfig {
+  row: FormationCharacterView & { placedSlot?: number | null };
+  actionLabel: string;
+  actionDisabled?: boolean;
+  onAction: () => void;
+}
+let activeDetail: DetailModalConfig | null = null;
 
 function closePicker(): void {
   picker = null;
   pickerFactionFilter = 'all';
-  detailRow = null;
+  activeDetail = null;
 }
 
 function act(action: Action): void {
@@ -105,8 +116,9 @@ function rarityLabel(rarity: 'common' | 'rare'): string {
 // ---------------------------------------------------------------------------
 // ステータスバー
 
-function statusSpan(text: string): HTMLSpanElement {
+function statusSpan(text: string, cls = ''): HTMLSpanElement {
   const el = document.createElement('span');
+  if (cls) el.className = cls;
   el.textContent = text;
   return el;
 }
@@ -142,6 +154,8 @@ function renderStatus(vm: ViewModel): void {
     mana.className = 'mana-dots';
     mana.textContent = `マナ ${manaDots(s.mana, s.manaCap)}`;
     status.append(hpGroup('HP', s.hp, s.maxHp), mana, statusSpan(`ターン ${s.turn}`));
+    status.append(statusSpan(`防御 ${s.defense}/${s.defenseMax}`));
+    if (s.fleeIn !== null) status.append(statusSpan(`離脱まで ${s.fleeIn}`, 'warn'));
   } else if (s.kind === 'dungeon') {
     status.append(statusSpan(`HP ${s.hp}/${s.maxHp}`), statusSpan(`${s.sectorName} 深度 ${s.depth}/${s.goal}`));
   } else if (s.kind === 'town') {
@@ -191,15 +205,27 @@ function renderTavernStage(s: TownView): void {
   const list = document.createElement('div');
   list.className = 'list';
   for (const t of s.tavern) {
-    const card = document.createElement('div');
-    card.className = 'card';
+    // 酒場のカードもタップで詳細モーダルを開く。中身は編成と同じ (名前・陣営・レアリティ・
+    // 攻撃力・体力・スキル 2 つの詳細・パッシブ)。雇う判断にはスキルも見えないと片手落ちになる
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'card card-tappable';
     const name = document.createElement('p');
     name.className = 'card-name';
     name.textContent = `${t.name} (${t.faction} / ${rarityLabel(t.rarity)})`;
     const sub = document.createElement('p');
     sub.className = 'card-sub';
-    sub.textContent = `攻撃 ${t.attack} ・ 体力 ${t.vitality}`;
-    card.append(name, sub, actionButton(`雇う (${t.price} G)`, { type: 'hire', id: t.id }, !t.affordable));
+    sub.textContent = `攻撃 ${t.attack} ・ 体力 ${t.vitality} ・ ${t.price} G`;
+    card.append(name, sub);
+    card.addEventListener('click', () => {
+      activeDetail = {
+        row: t,
+        actionLabel: `雇う (${t.price} G)`,
+        actionDisabled: !t.affordable,
+        onAction: () => act({ type: 'hire', id: t.id }),
+      };
+      render();
+    });
     list.append(card);
   }
   stageBody.append(list);
@@ -260,33 +286,48 @@ function renderStageBody(vm: ViewModel): void {
 
 function renderPortrait(vm: ViewModel): void {
   portraitEl.innerHTML = '';
-  if (vm.screen.kind !== 'battle') return;
-  const e = vm.screen.enemy;
+  portraitEl.classList.remove('visible');
 
-  const info = document.createElement('div');
-  info.className = 'enemy-info';
-  const name = document.createElement('p');
-  name.className = 'enemy-name';
-  name.textContent = e.groupSize > 1 ? `${e.name} (${e.groupSize})` : e.name;
-  info.append(name);
+  if (vm.screen.kind === 'battle') {
+    portraitEl.classList.add('visible');
+    const e = vm.screen.enemy;
 
-  const hpWrap = document.createElement('div');
-  hpWrap.className = 'enemy-hp-wrap';
-  if (e.alive) {
-    hpWrap.append(hpGroup('HP', e.hp, e.maxHp, 'enemy'));
-  } else {
-    const hp = document.createElement('p');
-    hp.className = 'enemy-hp';
-    hp.textContent = '撃破';
-    hpWrap.append(hp);
+    const info = document.createElement('div');
+    info.className = 'enemy-info';
+    const name = document.createElement('p');
+    name.className = 'enemy-name';
+    name.textContent = e.groupSize > 1 ? `${e.name} (${e.groupSize})` : e.name;
+    info.append(name);
+
+    const hpWrap = document.createElement('div');
+    hpWrap.className = 'enemy-hp-wrap';
+    if (e.alive) {
+      hpWrap.append(hpGroup('HP', e.hp, e.maxHp, 'enemy'));
+    } else {
+      const hp = document.createElement('p');
+      hp.className = 'enemy-hp';
+      hp.textContent = '撃破';
+      hpWrap.append(hp);
+    }
+    info.append(hpWrap);
+    portraitEl.append(info);
+
+    const art = document.createElement('pre');
+    art.className = 'portrait-art' + (e.isBoss ? ' boss' : '');
+    art.textContent = portraitFor(e.name, e.isBoss).join('\n');
+    portraitEl.append(art);
+    return;
   }
-  info.append(hpWrap);
-  portraitEl.append(info);
 
-  const art = document.createElement('pre');
-  art.className = 'portrait-art' + (e.isBoss ? ' boss' : '');
-  art.textContent = portraitFor(e.name, e.isBoss).join('\n');
-  portraitEl.append(art);
+  // 探索中のイベントアイコン。通路の中央あたりに小さな絵を出し、
+  // 何が起きたかをタイトル・本文より先に一目でわかるようにする
+  if (vm.screen.kind === 'dungeon' && vm.screen.event) {
+    portraitEl.classList.add('visible');
+    const art = document.createElement('pre');
+    art.className = `event-icon-art event-icon-${vm.screen.event.kind}`;
+    art.textContent = eventIconFor(vm.screen.event.kind).join('\n');
+    portraitEl.append(art);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -305,17 +346,20 @@ function renderIcons(vm: ViewModel): void {
   if (vm.screen.kind !== 'battle') return;
   const s = vm.screen;
 
-  // ステージ下端: 味方の状態を横一列で。0 や無しのときは出さない
-  if (s.guard > 0) iconsAlly.append(badge(`防${s.guard}`));
+  // ステージ左: 味方の状態を縦列で。防御の枚数・逃走の残りターンは上部ステータスに出すので、
+  // ここではバフ・バリアだけを並べる。0 や無しのときは出さない
   if (s.barrier) iconsAlly.append(badge('バリア'));
+  if (s.cheerStacks > 0) iconsAlly.append(badge(`鼓舞${s.cheerStacks}`, 'warn'));
+  if (s.wardStacks > 0) iconsAlly.append(badge(`ガ${s.wardStacks}`, 'warn'));
   if (s.combo > 0) iconsAlly.append(badge(`コンボ${s.combo}`, 'warn'));
-  if (s.buff > 0) iconsAlly.append(badge('支援', 'warn'));
 
-  // ステージ上端: 敵の状態を横一列で。耐性・大技の予告・ボスの印
+  // ステージ右: 敵の状態を縦列で。耐性・大技とダウン攻撃の予告・ボスの印
   const e = s.enemy;
   if (e.alive) {
     if (e.resist) iconsEnemy.append(badge(e.resist === '物理' ? '物理耐' : '魔法耐'));
-    iconsEnemy.append(badge(`大${e.countdown}`, e.countdown === 1 ? 'warn' : ''));
+    iconsEnemy.append(badge(`大${e.bigCountdown}`, e.bigCountdown === 1 ? 'warn' : ''));
+    // ダウン攻撃の予告は大技と別色にする (down クラス)
+    if (e.downCountdown !== null) iconsEnemy.append(badge(`ダ${e.downCountdown}`, 'down'));
     if (e.isBoss) iconsEnemy.append(badge('ボス', 'boss'));
   }
 }
@@ -365,14 +409,14 @@ function tappableSlotCard(character: FormationCharacterView | null, onClick: () 
   return b;
 }
 
-/** 戦闘中の前衛カード。名前とスキル 2 つのボタンを収める */
+/** 戦闘中の前衛カード。名前とスキル 2 つのボタンを縦に収める (横並びだと名前が折り返しやすいため) */
 function battleSlotCard(slot: BattleView['slots'][number], slotIndex: number): HTMLElement {
   if (!slot) return emptySlotCard();
   const card = document.createElement('div');
-  card.className = 'slot-card';
+  card.className = 'slot-card' + (slot.stunned ? ' stunned' : '');
   const name = document.createElement('p');
   name.className = 'slot-name';
-  name.textContent = slot.name;
+  name.textContent = slot.stunned ? `${slot.name} (気絶)` : slot.name;
   card.append(name);
 
   const row = document.createElement('div');
@@ -384,7 +428,8 @@ function battleSlotCard(slot: BattleView['slots'][number], slotIndex: number): H
     b.disabled = !sk.usable;
     const label = document.createElement('span');
     label.className = 'skill-label';
-    label.textContent = `${sk.name}(${sk.cost})`;
+    // ボタンには折り返さない短縮名 + コストだけを出す。正式名はログ・詳細モーダル側で見せる
+    label.textContent = `${sk.shortName}(${sk.cost})`;
     b.append(label);
     if (sk.note) {
       const note = document.createElement('span');
@@ -452,7 +497,16 @@ function buildPickerRow(c: FormationCharacterView & { placedSlot: number | null 
     head.append(placed);
   }
   head.addEventListener('click', () => {
-    detailRow = c;
+    activeDetail = {
+      row: c,
+      actionLabel: 'この枠に配置',
+      onAction: () => {
+        const onPick = picker!.onPick;
+        const id = c.id;
+        closePicker();
+        onPick(id);
+      },
+    };
     render();
   });
   row.append(head);
@@ -522,15 +576,20 @@ function renderPicker(): void {
   pickerEl.append(list);
 }
 
-/** 詳細ポップアップ (モーダル)。名前・陣営・レアリティ・攻撃力・体力・スキル 2 つの詳細・パッシブを出す */
+/**
+ * 詳細ポップアップ (モーダル)。名前・陣営・レアリティ・攻撃力・体力・スキル 2 つの詳細・
+ * パッシブを出す。編成・交代のピッカーと酒場が共有する 1 つのコンポーネントで、
+ * 実行ボタンのラベルと挙動 (配置 / 雇用) だけが activeDetail 側で違う
+ */
 function renderDetailModal(): void {
   detailModalEl.innerHTML = '';
-  if (!detailRow || !picker) {
+  if (!activeDetail) {
     detailModalEl.hidden = true;
     return;
   }
   detailModalEl.hidden = false;
-  const c = detailRow;
+  const cfg = activeDetail;
+  const c = cfg.row;
 
   const card = document.createElement('div');
   card.className = 'modal-card';
@@ -549,7 +608,7 @@ function renderDetailModal(): void {
   stats.className = 'card-sub';
   stats.textContent = `攻撃 ${c.attack} ・ 体力 ${c.vitality}`;
   scroll.append(stats);
-  if (c.placedSlot !== null) {
+  if (c.placedSlot !== null && c.placedSlot !== undefined) {
     const placed = document.createElement('p');
     placed.className = 'card-sub placed';
     placed.textContent = `配置中: 前衛 ${c.placedSlot + 1}`;
@@ -572,23 +631,22 @@ function renderDetailModal(): void {
 
   const actions = document.createElement('div');
   actions.className = 'modal-actions';
-  const place = document.createElement('button');
-  place.type = 'button';
-  place.textContent = 'この枠に配置';
-  place.addEventListener('click', () => {
-    const onPick = picker!.onPick;
-    const id = c.id;
-    closePicker();
-    onPick(id);
+  const primary = document.createElement('button');
+  primary.type = 'button';
+  primary.textContent = cfg.actionLabel;
+  primary.disabled = !!cfg.actionDisabled;
+  primary.addEventListener('click', () => {
+    activeDetail = null;
+    cfg.onAction();
   });
   const close = document.createElement('button');
   close.type = 'button';
   close.textContent = '閉じる';
   close.addEventListener('click', () => {
-    detailRow = null;
+    activeDetail = null;
     render();
   });
-  actions.append(place, close);
+  actions.append(primary, close);
   card.append(actions);
 
   detailModalEl.append(card);
@@ -602,7 +660,7 @@ function openTownFormationPicker(s: TownView, slot: number): void {
     onPick: (id) => act({ type: 'formation-set', slot, id }),
   };
   pickerFactionFilter = 'all';
-  detailRow = null;
+  activeDetail = null;
   render();
 }
 
@@ -614,7 +672,7 @@ function openDungeonFormationPicker(s: DungeonView, slot: number): void {
     onPick: (id) => act({ type: 'dungeon-formation-set', slot, id }),
   };
   pickerFactionFilter = 'all';
-  detailRow = null;
+  activeDetail = null;
   render();
 }
 
@@ -633,7 +691,7 @@ function openBattleSwapPicker(s: BattleView, slot: number): void {
     },
   };
   pickerFactionFilter = 'all';
-  detailRow = null;
+  activeDetail = null;
   render();
 }
 
@@ -660,11 +718,20 @@ function renderBattleCluster(s: BattleView): void {
 
   s.slots.forEach((slot, i) => slotsEl.append(battleSlotCard(slot, i)));
 
-  controlsEl.append(actionButton('ターン終了', { type: 'battle-end-turn' }));
-  controlsEl.append(actionButton(`防御 (${s.guard}/${s.guardMax})`, { type: 'battle-guard' }, !s.canGuard));
-  controlsEl.append(actionButton(`回復薬 (${s.potions})`, { type: 'potion' }, s.potions <= 0));
+  // 操作は押す頻度で 2 群に分ける。常用群 (ターン終了・防御) は毎ターン押すので大きく上に、
+  // 臨時群 (回復薬・編成・逃げる) はたまにしか押さないので小さく下にまとめる。
+  // 防御の枚数・逃走の残りターンは上部のステータス欄に出すので、ボタン側に数字は乗せない
+  const primary = document.createElement('div');
+  primary.className = 'controls-primary';
+  primary.append(actionButton('ターン終了', { type: 'battle-end-turn' }));
+  primary.append(actionButton('防御', { type: 'battle-defense' }, !s.canDefense));
+  controlsEl.append(primary);
+
+  const secondary = document.createElement('div');
+  secondary.className = 'controls-secondary';
+  secondary.append(actionButton('回復薬', { type: 'potion' }, s.potions <= 0));
   const swapDisabled = s.swapCooldown > 0 || s.reserve.length === 0;
-  controlsEl.append(
+  secondary.append(
     navButton(
       s.swapCooldown > 0 ? `編成 (あと${s.swapCooldown})` : '編成',
       () => {
@@ -675,6 +742,8 @@ function renderBattleCluster(s: BattleView): void {
       swapDisabled,
     ),
   );
+  secondary.append(actionButton(s.fleeIn !== null ? '離脱取消' : '逃げる', { type: 'battle-flee' }));
+  controlsEl.append(secondary);
 }
 
 // ---------------------------------------------------------------------------
@@ -683,7 +752,7 @@ function renderBattleCluster(s: BattleView): void {
 // corridor.ts の位相は depth % 4 なので、深度を小数のまま渡せば途中の位相も連続的に描ける。
 // game.ts にはタイマーを持ち込まず、ここ (main.ts) だけで完結させる
 
-const ADVANCE_DURATION_MS = 2000;
+const ADVANCE_DURATION_MS = 1000;
 const ADVANCE_STEPS = 3;
 
 function startAdvanceAnimation(vmBefore: ViewModel): void {
