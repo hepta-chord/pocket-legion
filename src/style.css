@@ -64,21 +64,26 @@ button:active:not(:disabled) {
   overflow: hidden;
 }
 
+/* ステータス欄は操作クラスタに高さを譲るため、控えめなサイズに詰めてある */
 #status {
   flex: 0 0 auto;
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 12px;
+  gap: 3px 10px;
   color: var(--dim);
-  letter-spacing: 0.02em;
-  font-size: 12px;
-  line-height: 1.4;
+  letter-spacing: 0.01em;
+  font-size: 11px;
+  line-height: 1.25;
 }
 
 #status .hp-num,
 #status .mana-num,
 #status .gold-num {
   color: var(--fg);
+}
+
+#status .warn {
+  color: var(--warn);
 }
 
 /* HP バー (パーティ・敵の共通部品)。数値は併記し、バーは補助として添える */
@@ -153,7 +158,9 @@ button:active:not(:disabled) {
   overflow: hidden;
 }
 
-#stage[data-screen='battle'] #portrait {
+/* 戦闘の敵画像・探索のイベントアイコンのどちらでも使うので、画面種別ではなく
+   JS 側が付け外しする .visible クラスで表示を切り替える (中身が無いときは隠す) */
+#portrait.visible {
   display: flex;
 }
 
@@ -167,6 +174,40 @@ button:active:not(:disabled) {
 }
 
 .portrait-art.boss {
+  color: var(--warn);
+}
+
+/* 探索中のイベントアイコン。将来 <img> に差し替えても枠のサイズは変えずに済むよう、
+   portrait-art と同じく固定サイズのプレースホルダにする */
+.event-icon-art {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.2;
+  white-space: pre;
+  text-align: center;
+  color: var(--dim);
+}
+
+.event-icon-battle,
+.event-icon-elite {
+  color: var(--bad);
+}
+
+.event-icon-treasure {
+  color: var(--warn);
+}
+
+.event-icon-spring,
+.event-icon-boss-alt,
+.event-icon-recruit {
+  color: var(--good);
+}
+
+.event-icon-trap {
+  color: var(--bad);
+}
+
+.event-icon-boss {
   color: var(--warn);
 }
 
@@ -239,36 +280,39 @@ button:active:not(:disabled) {
   font-size: 12px;
 }
 
-/* 状態アイコンの横一列。ステージに重ねる (敵画像に被ってよい)。
-   敵の状態はステージ上端、味方の状態はステージ下端に横一列で置く */
+/* 状態アイコンの左右縦列。ステージに重ねる (敵画像に被ってよい)。
+   味方の状態は左、敵の状態は右に縦一列で置く。バッジは折り返さず (nowrap)、
+   収まりきらない項目は文字数を削るか (物理耐性→物理耐)、バッジ自体の幅を広げて対応する */
 .icons {
   position: absolute;
-  left: 4px;
-  right: 4px;
+  top: 30px;
+  bottom: 6px;
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 4px;
-  justify-content: center;
   pointer-events: none;
 }
 
-#icons-enemy {
-  top: 40px;
+#icons-ally {
+  left: 4px;
+  align-items: flex-start;
 }
 
-#icons-ally {
-  bottom: 4px;
+#icons-enemy {
+  right: 4px;
+  align-items: flex-end;
 }
 
 .badge {
   min-width: 26px;
-  padding: 2px 3px;
+  padding: 2px 4px;
   border-radius: 4px;
   background: var(--panel-raised);
   border: 1px solid var(--line);
   font-size: 10px;
   text-align: center;
   line-height: 1.3;
+  white-space: nowrap;
 }
 
 .badge.warn {
@@ -277,6 +321,12 @@ button:active:not(:disabled) {
 }
 
 .badge.boss {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+/* ダウン攻撃の予告。大技の予告 (warn) とは別色にして見分ける */
+.badge.down {
   border-color: var(--bad);
   color: var(--bad);
 }
@@ -316,11 +366,13 @@ button:active:not(:disabled) {
 /* ---------------------------------------------------------------------- */
 /* 操作クラスタ。左にキャラスロット 3 列 x 2 行、右に操作ボタンの縦列 */
 
+/* ステージ・ステータス欄の高さを削ったぶんをここに回す (#stage は flex:1 なので、
+   #cluster を伸ばせばそのぶん自動で #stage が縮む) */
 #cluster {
   flex: 0 0 auto;
   display: flex;
   gap: 6px;
-  height: 148px;
+  height: 208px;
 }
 
 #slots {
@@ -342,24 +394,57 @@ button:active:not(:disabled) {
 }
 
 #controls {
-  flex: 0 0 84px;
+  flex: 0 0 92px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 
 #controls button {
   flex: 1;
   /*
-   * min-height を固定値 (44px) にすると、戦闘・探索の 4 個ボタン (例: ターン終了 / 防御 /
-   * 回復薬 / 編成) の合計が #cluster の高さ (148px) を超え、4 個目の「編成」が
+   * min-height を固定値にすると、ボタン数の合計が #cluster の高さを超えたときに
    * ステージ外へはみ出して見えなくなる (スクロールなしレイアウトなので隠れたまま拾えない)。
-   * min-height を立てず flex:1 だけに任せれば、ボタン数がいくつでも 148px にきっちり収まる
+   * min-height を立てず flex:1 だけに任せれば、ボタン数がいくつでもきっちり収まる
    */
   min-height: 0;
   font-size: 12px;
   text-align: center;
   padding: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/*
+ * 戦闘の操作は押す頻度で 2 群に分ける。常用群 (ターン終了・防御) は毎ターン押すので
+ * 大きく上に、臨時群 (回復薬・編成・逃げる) はたまにしか押さないので小さく下にまとめる。
+ * #controls (id) より詳しくするため #controls を前に付けて、上の汎用ルールより優先させる
+ */
+#controls .controls-primary,
+#controls .controls-secondary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+}
+
+#controls .controls-primary {
+  flex: 3 1 0;
+}
+
+#controls .controls-secondary {
+  flex: 2 1 0;
+}
+
+#controls .controls-primary button {
+  font-size: 14px;
+  font-weight: bold;
+}
+
+#controls .controls-secondary button {
+  font-size: 10px;
+  padding: 2px;
 }
 
 /* キャラスロット 1 枠。名前 + スキル 2 ボタンを縦に詰める */
@@ -389,6 +474,11 @@ button:active:not(:disabled) {
   border-color: var(--warn);
 }
 
+.slot-card.stunned {
+  border-color: var(--warn);
+  opacity: 0.7;
+}
+
 .slot-name {
   margin: 0;
   font-size: 10px;
@@ -398,28 +488,32 @@ button:active:not(:disabled) {
   text-overflow: ellipsis;
 }
 
+/* スキル 2 つは横並びではなく縦並びにする。1 ボタンあたりの横幅が広がって、
+   短縮名 + コストが折り返さずに収まる */
 .slot-skills {
   flex: 1;
   display: flex;
+  flex-direction: column;
   gap: 2px;
 }
 
 .skill-btn {
   flex: 1;
-  min-height: 34px;
+  min-height: 0;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
   justify-content: center;
-  gap: 0;
-  padding: 2px;
-  font-size: 10px;
+  gap: 4px;
+  padding: 2px 4px;
+  font-size: 11px;
   text-align: center;
 }
 
 .skill-btn .skill-label {
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.2;
+  white-space: nowrap;
 }
 
 .skill-btn.raised .skill-label {
@@ -429,6 +523,7 @@ button:active:not(:disabled) {
 .skill-btn .skill-note {
   font-size: 8px;
   color: var(--dim);
+  white-space: nowrap;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -459,6 +554,12 @@ button:active:not(:disabled) {
   flex-direction: column;
   gap: 3px;
   background: var(--panel-raised);
+}
+
+/* 酒場のカードなど、タップで詳細モーダルを開く card。button 要素だが見た目は .card のまま */
+.card-tappable {
+  width: 100%;
+  font: inherit;
 }
 
 .card-name {
