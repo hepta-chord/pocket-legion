@@ -1,6 +1,8 @@
 :root {
   color-scheme: dark;
   --bg: #0d1117;
+  --panel: #161b22;
+  --panel-raised: #1c232c;
   --fg: #c9d1d9;
   --dim: #6b7684;
   --line: #232a33;
@@ -13,95 +15,26 @@
   box-sizing: border-box;
 }
 
+html,
+body {
+  height: 100%;
+}
+
 body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 15px;
+  font-size: 14px;
   -webkit-text-size-adjust: 100%;
-}
-
-#app {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-width: 480px;
-  min-height: 100dvh;
-  margin: 0 auto;
-  padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
-}
-
-#status {
-  margin: 0;
-  color: var(--dim);
-  letter-spacing: 0.04em;
-}
-
-/* 通路は潜っている間だけ出す。拠点と結果の画面では場所を取らせない */
-#stage {
-  display: none;
-}
-
-#stage[data-screen='dungeon'] {
-  display: block;
-  aspect-ratio: 33 / 13;
-  border: 1px solid var(--line);
-}
-
-#corridor {
-  display: block;
-  width: 100%;
-  height: 100%;
-}
-
-#log {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-end;
-  gap: 2px;
-  min-height: 6em;
-}
-
-.line {
-  margin: 0;
-  color: var(--dim);
-}
-
-.line.good {
-  color: var(--good);
-}
-
-.line.bad {
-  color: var(--bad);
-}
-
-.line.warn {
-  color: var(--warn);
-}
-
-#panel {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.lead {
-  margin: 0;
-  font-size: 17px;
-}
-
-.body {
-  margin: 0;
-  color: var(--dim);
+  overflow: hidden;
 }
 
 button {
-  padding: 14px;
+  padding: 8px;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: #161b22;
+  background: var(--panel);
   color: inherit;
   font: inherit;
   text-align: left;
@@ -116,58 +49,355 @@ button:active:not(:disabled) {
   background: #1f2630;
 }
 
-/* 戦闘画面 -------------------------------------------------------------- */
+/* ---------------------------------------------------------------------- */
+/* 全画面の骨格。100dvh に収め、スクロールを出さない。
+   縦が足りない環境ではステージ (flex: 1) だけを潰して吸収する */
 
-/* コンボは 0 のとき目立たせない。積み上がってはじめて色を付ける */
-.combo {
-  margin: 0;
-  color: var(--dim);
-  font-size: 13px;
-}
-
-.combo.active {
-  color: var(--warn);
-  font-weight: bold;
-}
-
-.enemies {
+#app {
   display: flex;
   flex-direction: column;
+  height: 100dvh;
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
   gap: 6px;
+  overflow: hidden;
 }
 
-.enemy {
+#status {
+  flex: 0 0 auto;
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 10px;
-  align-items: baseline;
-  min-height: 44px;
-  padding: 14px;
+  gap: 4px 12px;
+  color: var(--dim);
+  letter-spacing: 0.02em;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+#status .hp-num,
+#status .mana-num,
+#status .gold-num {
+  color: var(--fg);
+}
+
+/* ステージ。flex: 1 で残り全部を取り、縦が足りなければここが潰れる。
+   min-height: 0 が無いと flex item は内容ぶんの高さを主張してスクロールの原因になる */
+#stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
   border: 1px solid var(--line);
-  border-radius: 6px;
-  background: #161b22;
+  border-radius: 8px;
+  background: var(--panel);
+  overflow: hidden;
 }
 
-.enemy.dead {
-  opacity: 0.4;
+#corridor {
+  display: none;
+  width: 100%;
+  height: 100%;
 }
 
-.enemy.warn .enemy-cd {
+#stage[data-screen='dungeon'] #corridor {
+  display: block;
+}
+
+/* 敵の画像枠。当面はアスキーアートで、将来 <img> に差し替えても枠のサイズは変えずに済む */
+#portrait {
+  display: none;
+  position: absolute;
+  inset: 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  /* 上は enemy-info (名前・HP) の分、左右は状態アイコン列の分を空ける */
+  padding: 34px 34px 6px;
+  overflow: hidden;
+}
+
+#stage[data-screen='battle'] #portrait {
+  display: flex;
+}
+
+.portrait-art {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.15;
+  white-space: pre;
+  color: var(--dim);
+  text-align: center;
+}
+
+.portrait-art.boss {
   color: var(--warn);
+}
+
+.enemy-info {
+  position: absolute;
+  top: 6px;
+  left: 34px;
+  right: 34px;
+  text-align: center;
+  font-size: 12px;
 }
 
 .enemy-name {
-  font-size: 15px;
+  font-size: 14px;
 }
 
 .enemy-hp,
 .enemy-cd {
   color: var(--dim);
-  font-size: 13px;
+  font-size: 11px;
 }
 
-/* 前衛カード。1 枠 1 行、スキルは横並びのボタンにする */
-.front {
+.enemy-cd.warn {
+  color: var(--warn);
+  font-weight: bold;
+}
+
+/* ステージに重ねる文面 (拠点の見出し、ダンジョンのイベント、結果) */
+#stage-body {
+  display: none;
+  position: absolute;
+  inset: 0;
+  flex-direction: column;
+  padding: 10px;
+  gap: 6px;
+  overflow-y: auto;
+}
+
+#stage[data-screen='town'] #stage-body,
+#stage[data-screen='dungeon'] #stage-body,
+#stage[data-screen='result'] #stage-body {
+  display: flex;
+}
+
+#stage[data-screen='dungeon'] #stage-body {
+  justify-content: flex-end;
+}
+
+.event-box {
+  margin-top: auto;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(13, 17, 23, 0.86);
+}
+
+.stage-title {
+  margin: 0;
+  font-size: 16px;
+}
+
+.stage-body-text {
+  margin: 4px 0 0;
+  color: var(--dim);
+  font-size: 12px;
+}
+
+/* 左右の状態アイコン列。ステージに重ねる */
+.icons {
+  position: absolute;
+  top: 30px;
+  bottom: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 28px;
+  align-items: center;
+  pointer-events: none;
+}
+
+#icons-left {
+  left: 4px;
+}
+
+#icons-right {
+  right: 4px;
+}
+
+.badge {
+  min-width: 26px;
+  padding: 2px 3px;
+  border-radius: 4px;
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  font-size: 10px;
+  text-align: center;
+  line-height: 1.3;
+}
+
+.badge.warn {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.badge.boss {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+/* ---------------------------------------------------------------------- */
+/* メッセージログ。3〜4 行の固定高で、あふれた古い行は消える (スクロールさせない) */
+
+#log {
+  flex: 0 0 auto;
+  height: 4.6em;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 1px;
+}
+
+.line {
+  margin: 0;
+  color: var(--dim);
+  font-size: 12px;
+  line-height: 1.15;
+}
+
+.line.good {
+  color: var(--good);
+}
+
+.line.bad {
+  color: var(--bad);
+}
+
+.line.warn {
+  color: var(--warn);
+}
+
+/* ---------------------------------------------------------------------- */
+/* 操作クラスタ。左にキャラスロット 3 列 x 2 行、右に操作ボタンの縦列 */
+
+#cluster {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+  height: 148px;
+}
+
+#slots {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(2, 1fr);
+  gap: 4px;
+}
+
+/* 拠点系のページなど、キャラスロットを出さない画面は controls だけを幅いっぱいに広げる */
+#cluster.no-slots #slots {
+  display: none;
+}
+
+#cluster.no-slots #controls {
+  flex: 1 1 auto;
+}
+
+#controls {
+  flex: 0 0 84px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+#controls button {
+  flex: 1;
+  min-height: 44px;
+  font-size: 12px;
+  text-align: center;
+  padding: 4px;
+}
+
+/* キャラスロット 1 枠。名前 + スキル 2 ボタンを縦に詰める */
+.slot-card {
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.slot-card.empty,
+.slot-card.down {
+  opacity: 0.45;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.slot-card.selectable {
+  border-color: var(--warn);
+}
+
+.slot-name {
+  margin: 0;
+  font-size: 10px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.slot-skills {
+  flex: 1;
+  display: flex;
+  gap: 2px;
+}
+
+.skill-btn {
+  flex: 1;
+  min-height: 34px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  padding: 2px;
+  font-size: 10px;
+  text-align: center;
+}
+
+.skill-btn .skill-label {
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.skill-btn.raised .skill-label {
+  color: var(--warn);
+}
+
+.skill-btn .skill-note {
+  font-size: 8px;
+  color: var(--dim);
+}
+
+/* ---------------------------------------------------------------------- */
+/* 拠点・酒場・編成・結果の一覧表示 (stage-body の中身) */
+
+.lead {
+  margin: 0;
+  font-size: 15px;
+}
+
+.body {
+  margin: 0;
+  color: var(--dim);
+  font-size: 12px;
+}
+
+.list {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -176,71 +406,108 @@ button:active:not(:disabled) {
 .card {
   border: 1px solid var(--line);
   border-radius: 6px;
-  padding: 8px;
+  padding: 6px 8px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-}
-
-.card.empty {
-  color: var(--dim);
-  text-align: center;
-  padding: 14px;
+  gap: 3px;
+  background: var(--panel-raised);
 }
 
 .card-name {
   margin: 0;
-  font-size: 14px;
+  font-size: 13px;
 }
 
-.skills {
+.card-sub {
+  margin: 0;
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.row {
   display: flex;
-  flex-wrap: wrap;
   gap: 6px;
 }
 
-.skill-btn {
-  flex: 1 1 auto;
-  min-width: 44px;
-  min-height: 44px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  text-align: center;
-  align-items: center;
-  justify-content: center;
-}
-
-.skill-label {
-  font-size: 14px;
-}
-
-.skill-btn.raised .skill-label {
-  color: var(--warn);
-}
-
-.skill-note {
-  font-size: 11px;
-  color: var(--dim);
-}
-
-.skill-reason {
-  font-size: 11px;
-  color: var(--bad);
-}
-
-.controls {
-  display: flex;
-  gap: 8px;
-}
-
-.controls button {
+.row button {
   flex: 1;
   text-align: center;
 }
 
-.swap-panel {
+/* ---------------------------------------------------------------------- */
+/* ピッカー (編成の候補一覧・戦闘の交代一覧)。1 画面には収まらない候補数もあるので、
+   ここだけは内部スクロールを許す (外側の #app 自体はスクロールしない) */
+
+/* [hidden] は既定で display: none だが、id セレクタの詳細度で下の display: flex に
+   負けてしまうので明示しておく (JS 側は el.hidden の切り替えだけで見た目を制御する) */
+#picker[hidden] {
+  display: none;
+}
+
+#picker {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  background: rgba(3, 5, 8, 0.92);
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+  gap: 8px;
+}
+
+.picker-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.picker-title {
+  margin: 0;
+  font-size: 15px;
+}
+
+.picker-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.picker-row {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.picker-row-head {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  min-height: 44px;
+}
+
+.picker-row-head .placed {
+  color: var(--good);
+}
+
+.picker-detail {
+  padding: 6px 8px 8px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.picker-skill,
+.picker-passive {
+  margin: 0;
+  font-size: 11px;
+  color: var(--dim);
 }
